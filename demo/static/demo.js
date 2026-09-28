@@ -184,6 +184,7 @@ window.WSW = (() => {
     bannerEl = root.appendChild(h("div", { hidden: true }));
     const main = root.appendChild(h("main.wrap"));
     root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization")));
+    if (lastHealth) health(lastHealth);     // a re-mount (detail page: progress <-> result) keeps the known state
     return main;
   }
   let navCount = 0;
@@ -260,7 +261,7 @@ window.WSW = (() => {
     }
 
     function speakersControl() {
-      const opts = [["", "Auto"], ["2", "2"], ["3", "3"], ["4", "4"]];
+      const opts = [["", "Auto"], ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]];
       const seg = h("div.seg", { role: "radiogroup", "aria-label": "Number of speakers" });
       const paint = () => seg.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.v === speakersPref));
       for (const [v, label] of opts) {
@@ -612,7 +613,7 @@ window.WSW = (() => {
   const Detail = (() => {
     let D = null;           // {row, audio, result}
     let ws = null, main, titleInp, metaEl, playBtn, timeEl, dimEl, bodySlot, colorOf = {}, nameEls = [], words = [], cur = -1, curTurn = null;
-    let follow = true, jumpBtn, rafId = 0, elapsedIv = 0, lastUserScroll = 0;
+    let follow = true, jumpBtn, rafId = 0, elapsedIv = 0, lastUserScroll = 0, rerunAt = 0;
 
     function mount(data) {
       D = data;
@@ -840,8 +841,30 @@ window.WSW = (() => {
 
       return h("div.dgrid", tcard,
         h("aside.aside",
-          h("section.box.spk-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Speakers"), h("span", `${res.speakers.length}`)), h("div.spk-list", spkRows)),
+          h("section.box.spk-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Speakers"), h("span", `${res.speakers.length}`)), h("div.spk-list", spkRows), rerunControl()),
           h("section.box.stats-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Stats")), stats)));
+    }
+
+    // "wrong number of speakers?" -> transcribe the same audio again with a count (or Auto)
+    function rerunControl() {
+      const r = D.row;
+      let pick = r.num_speakers_hint ? String(r.num_speakers_hint) : "";
+      const seg = h("div.seg", { role: "radiogroup", "aria-label": "Number of speakers for the re-run" });
+      const paint = () => seg.querySelectorAll("button").forEach((b) => {
+        b.classList.toggle("on", b.dataset.v === pick);
+        b.setAttribute("aria-checked", String(b.dataset.v === pick));
+      });
+      for (const [v, label] of [["", "Auto"], ["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]]) {
+        seg.append(h("button", { "data-v": v, role: "radio", on: { click: () => { pick = v; paint(); } } }, label));
+      }
+      paint();
+      const go = h("button.btn.btn-sm", { title: "Transcribe this recording again with this number of speakers", on: { click: () => {
+        go.disabled = true;
+        rerunAt = Date.now();
+        send("rerun", { id: r.id, num_speakers: pick ? +pick : null });
+        setTimeout(() => (go.disabled = false), 3000);   // normally the page has switched to progress by then
+      } } }, icon("retry"), "Re-run");
+      return h("div.rerun", h("span.field-label", "Re-run with"), h("div.rerun-row", seg, go));
     }
 
     function progressView() {
@@ -861,7 +884,9 @@ window.WSW = (() => {
             h("button.btn.primary", { on: { click: () => send("retry", { id: r.id }) } }, icon("retry"), "Retry")));
       }
       const elapsed = h("div.pv-elapsed");
-      const upd = () => (elapsed.textContent = `${clock((Date.now() - new Date(r.created_at)) / 1000)} since upload`);
+      const upd = () => (elapsed.textContent = rerunAt
+        ? `${clock((Date.now() - rerunAt) / 1000)} since re-run`
+        : `${clock((Date.now() - new Date(r.created_at)) / 1000)} since upload`);
       upd(); elapsedIv = setInterval(upd, 1000);
       return h("div.progress-view",
         h("div.pv-ico", { cls: st }, st === "queued" ? icon("clock") : h("div.spin")),
@@ -880,7 +905,11 @@ window.WSW = (() => {
 
     function update(p) {
       if (!D || !D.row) return;
-      if (p.result && !D.result) { const t = ws ? ws.getCurrentTime() : 0; mount(p); if (t) ws.once?.("ready", () => ws.setTime(t)); return; }
+      if (p.result && !D.result) { const t = ws ? ws.getCurrentTime() : 0; rerunAt = 0; mount(p); if (t) ws.once?.("ready", () => ws.setTime(t)); return; }
+      if (D.result && p.row.status && p.row.status !== "done") {   // re-run: back to the live progress view
+        mount({ ...D, row: { ...D.row, ...p.row }, result: null });
+        return;
+      }
       const statusChanged = p.row.status !== D.row.status || p.row.note !== D.row.note;
       D.row = { ...D.row, ...p.row };
       titleInp.setValue(D.row.name);

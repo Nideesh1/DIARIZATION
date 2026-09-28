@@ -50,6 +50,25 @@ async def retry(rid: str) -> None:
         await store.announce(rid, "queued")
 
 
+async def rerun(rid: str, num_speakers: int | None) -> bool:
+    """Transcribe a finished (or failed) recording again, e.g. with a different speaker count.
+    False when it is already queued/processing (or gone): nothing is enqueued."""
+    if not await store.rerun(rid, num_speakers):
+        return False
+    await store.enqueue(rid)
+    await store.announce(rid, "queued")
+    return True
+
+
+def speakers_hint(v) -> int | None:
+    """A speaker-count hint from the browser: 1..20, anything else (Auto, junk) -> None."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 < n <= 20 else None
+
+
 async def delete(rid: str) -> None:
     await store.delete(rid)
     await store.announce(rid, "deleted")
@@ -74,7 +93,7 @@ async def post_recording(request: Request, ext: str = "webm", num_speakers: int 
     """The browser (recorder or drag-and-drop upload) POSTs the file as the raw body (streamed to MinIO)."""
     name = (name or "").strip()[:80] or f"Recording {datetime.now():%H:%M}"
     try:
-        rid = await submit(name, ext.lower(), num_speakers if num_speakers and 0 < num_speakers <= 20 else None,
+        rid = await submit(name, ext.lower(), speakers_hint(num_speakers),
                            request.stream(), request.headers.get("content-type", "").split(";")[0] or None)
     except store.UploadError as e:
         return JSONResponse({"error": str(e)}, status_code=413 if str(e) == "too large" else 422)
@@ -200,6 +219,9 @@ async def common_action(c: Client, a: dict) -> bool:
         await delete(rid)
     elif a.get("op") == "retry":
         await retry(rid)
+    elif a.get("op") == "rerun":
+        if not await rerun(rid, speakers_hint(a.get("num_speakers"))):
+            push(c, "toast", "Already transcribing: wait for it to finish, then re-run", "err")
     else:
         return False
     return True

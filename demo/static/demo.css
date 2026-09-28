@@ -526,6 +526,8 @@ a.env-cell:hover .env-name { color: var(--kinpaku-pale); }
 .meta span { display: inline-flex; align-items: center; gap: 7px; }
 .meta .ico { width: 14px; height: 14px; color: var(--kinpaku-deep); }
 .dactions { display: flex; align-items: center; gap: 8px; flex: none; }
+.rerun { display: grid; gap: 10px; margin: 4px 18px 18px; padding-top: 14px; border-top: 1px solid var(--rule); }
+.rerun-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
 
 .player {
   position: sticky; top: calc(var(--top-h) + 8px); z-index: 30; margin-bottom: 20px;

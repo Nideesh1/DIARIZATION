@@ -113,6 +113,19 @@ async def requeue(rid: str) -> bool:
     return res == "UPDATE 1"
 
 
+async def rerun(rid: str, num_speakers: int | None) -> bool:
+    """done/failed -> queued with a new speaker-count hint (the detail page's Re-run). One atomic
+    UPDATE, so a row already queued/processing is left alone (False) and the worker's claim
+    (queued -> processing) stays the only way in. The audio is kept; the old result is dropped
+    here and its result.json overwritten by the new run."""
+    res = await db.execute(
+        "UPDATE recordings SET status = 'queued', num_speakers_hint = $2, note = NULL, error = NULL, "
+        "result_key = NULL, processing_s = NULL, rtf = NULL, speakers = NULL, words = NULL, "
+        "stt_model = NULL, diar_model = NULL, speaker_stats = NULL, speaker_names = '{}', updated_at = now() "
+        "WHERE id = $1 AND status IN ('done', 'failed')", rid, num_speakers)
+    return res == "UPDATE 1"
+
+
 async def requeue_interrupted() -> list[str]:
     """processing -> queued for jobs a stopped worker left behind (single-worker setup)."""
     rows = await db.fetch("UPDATE recordings SET status = 'queued', note = NULL, updated_at = now() "
