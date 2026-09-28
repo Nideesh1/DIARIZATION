@@ -120,3 +120,10 @@ docker run --rm asr-service:<tag> cat /opt/requirements.lock > requirements.lock
   failed with `CUDA error: an illegal memory access`, which kills the CUDA context. The eager
   decoder is about 20% slower (RTF 0.019 -> 0.024), still more than 40x real time.
 - `language` is always `"auto"`: Parakeet v3 does not report the language it detected.
+
+## License
+
+The code in this repository is MIT licensed (see `LICENSE`). The model weights are not
+included: they are downloaded by `prefetch.sh` and are covered by their own licenses and
+terms, listed on the `nvidia/parakeet-tdt-0.6b-v3` and `pyannote/speaker-diarization-community-1`
+model cards.
