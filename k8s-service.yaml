@@ -1,0 +1,33 @@
+# In-cluster name for the host-Docker ASR service on kamd1 (192.168.0.247:9100).
+# Selector-less Service + manual Endpoints: pods use http://asr.asr.svc.cluster.local:9100
+# Apply: kubectl apply -f k8s-service.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: asr
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: asr
+  namespace: asr
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 9100
+      targetPort: 9100
+      protocol: TCP
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: asr          # must match the Service name
+  namespace: asr
+subsets:
+  - addresses:
+      - ip: 192.168.0.247
+    ports:
+      - name: http   # must match the Service port name
+        port: 9100
+        protocol: TCP
