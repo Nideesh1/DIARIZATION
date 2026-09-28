@@ -9,8 +9,10 @@ window.WSW = (() => {
   "use strict";
 
   // ------------------------------------------------------------ helpers
-  const PALETTE = ["#5ea8ff", "#f5a524", "#3ecf8e", "#f472b6", "#a78bfa", "#2dd4bf", "#fb7185", "#a3e635"];
-  const NEUTRAL = "#4a4f5e";
+  // speaker colours: the kinpaku / patina / vermilion family first, then softer hues of the same
+  // lightness (oklch ~70-88 %) so every one reads on lacquer black
+  const PALETTE = ["#f4b93c", "#20bcb2", "#e97558", "#76ace4", "#8ec67a", "#dd7ead", "#b49ce1", "#ead5ab"];
+  const NEUTRAL = "#393833";
   const ICONS = {
     mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/>',
     stop: '<rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/>',
@@ -32,7 +34,6 @@ window.WSW = (() => {
     users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
     down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
-    sparkles: '<path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2Z"/>',
   };
 
   function icon(name, cls = "") {
@@ -169,11 +170,12 @@ window.WSW = (() => {
     const root = document.getElementById("wsw");
     root.replaceChildren();
     healthEl = h("div.health", { title: "GPU transcription service" }, h("span.dot"), h("span", "Checking…"));
-    root.append(h("header.topbar",
+    root.append(h("div.top-seam"), h("header.topbar",
       h("a.brand", { href: "/" }, h("img", { src: "/static/favicon.svg", alt: "" }), "Who said what"),
-      h("div.spacer"), healthEl));
+      h("div.spacer"), h("span.doc-ref", "Speech / Speakers / Transcript"), healthEl));
     bannerEl = root.appendChild(h("div", { hidden: true }));
     const main = root.appendChild(h("main.wrap"));
+    root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization")));
     return main;
   }
 
@@ -217,12 +219,17 @@ window.WSW = (() => {
       main.append(
         h("section.hero",
           h("div.hero-head",
-            h("div.eyebrow", icon("sparkles"), "Parakeet ASR + pyannote diarization, self-hosted"),
-            h("h1", "Who said what"),
+            h("div.eyebrow", h("span.eyebrow-rule"), "Parakeet ASR + pyannote diarization, self-hosted"),
+            h("div.product", "Who said what"),
+            h("h1", "Record it.", h("br"), "Know who spoke."),
             h("p", "Record a conversation or drop in a file. Get a word-timed transcript, split by speaker, in seconds.")),
-          h("div.studio", Recorder.el(), dropZone())),
-        h("section",
-          h("div.list-head", h("h2", "Recordings"), (countEl = h("span.count.tnum", "0"))),
+          h("div.hero-side",
+            h("div.side-title", h("span.side-rule"), "New recording"),
+            h("div.studio", Recorder.el(), dropZone()))),
+        h("section.library",
+          h("div.list-head",
+            h("div", h("div.split-label", "Library"), h("h2", "Recordings")),
+            (countEl = h("span.count.tnum", "0"))),
           (grid = h("div.grid"))));
       pageDrop();
       setRows(data.rows, true);
@@ -253,6 +260,7 @@ window.WSW = (() => {
         hintEl = h("div.rec-hint", "Tap to record from your microphone");
         canvas = h("canvas.rec-wave", { height: 64 });
         panel = h("div.panel.rec-panel",
+          h("div.stamp", "01 · Microphone"),
           h("div.rec-main", btn, h("div.rec-info", timeEl, hintEl)),
           canvas,
           h("div.rec-foot", speakersControl(), h("span.field-label.kbd-hint", "Space to start / stop")));
@@ -288,7 +296,7 @@ window.WSW = (() => {
           const x = i * (bw + gap);
           const hh = v == null ? 2 * dpr : Math.max(3 * dpr, v * H * 0.92);
           const fade = v == null ? 1 : Math.min(1, 0.35 + (i / n) * 0.9);
-          g.fillStyle = v == null ? "rgba(255,255,255,0.08)" : `rgba(255, 110, 122, ${fade})`;
+          g.fillStyle = v == null ? "rgba(200,200,200,0.1)" : `rgba(220, 96, 72, ${fade})`;
           g.beginPath();
           g.roundRect(x, (H - hh) / 2, bw, hh, bw / 2);
           g.fill();
@@ -365,13 +373,13 @@ window.WSW = (() => {
       dropBody = h("div", { style: { display: "contents" } });
       dropEl = h("div.panel.drop", { role: "button", tabindex: 0, "aria-label": "Upload audio files",
         on: { click: () => picker.click(), keydown: (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), picker.click()) } },
-        dropBody, picker);
+        h("div.stamp", "02 · Upload"), dropBody, picker);
       idleDrop();
       return dropEl;
     }
     function idleDrop() {
       dropBody.replaceChildren(h("div.drop-ico", icon("upload")), h("div.drop-title", "Drop an audio file"),
-        h("div.drop-sub", "or ", h("u", "browse your files")), h("div.drop-fmt", "wav · mp3 · m4a · flac · ogg · webm · video"));
+        h("div.drop-sub", "or ", h("u", "browse your files")), h("div.drop-fmt", ["wav", "mp3", "m4a", "flac", "ogg", "webm", "video"].map((f) => h("span.tag", f))));
     }
     function pageDrop() {
       const veil = document.body.appendChild(h("div.drag-veil", h("div", icon("upload"), "Drop to transcribe")));
@@ -398,7 +406,7 @@ window.WSW = (() => {
         dropBody.replaceChildren(h("div.drop-ico", h("div.spin")),
           h("div.drop-title", ok.length > 1 ? `Uploading ${i + 1} of ${ok.length}` : "Uploading"),
           h("div.drop-sub", `${f.name} · `, pct), h("div.bar.accent.upbar", bar));
-        const stem = f.name.replace(/\.[^.]+$/, "").slice(0, 80);
+        const stem = f.name.replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").trim().slice(0, 80);  // the display font draws "_" very wide
         const ext = (f.name.match(/\.([a-z0-9]{1,5})$/i) || [, "bin"])[1].toLowerCase();
         const r = await postAudio(f, { ext, name: stem, speakers: speakersPref,
           onProgress: (p) => { bar.style.width = `${p * 100}%`; pct.textContent = `${Math.round(p * 100)}%`; } });
@@ -463,10 +471,11 @@ window.WSW = (() => {
       const more = h("button.icon-btn.menu-btn", { "aria-label": "More actions", on: { click: (e) => { e.stopPropagation(); cardMenu(c, more); } } }, icon("more"));
       c.nameEl = nameEl;
       c.el.replaceChildren(
-        h("div.card-top", badge, h("div.card-title", nameEl, h("div.card-sub", sub)), more),
+        h("div.card-top", badge, h("div.card-title", h("div.stamp", { cls: st }, STAMP[st] || st), nameEl, h("div.card-sub", sub)), more),
         h("div.card-foot", footer(c, m)));
     }
 
+    const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
     function footer(c, m) {
       if (m.status === "done") {
         const n = m.speakers || 0;
@@ -594,7 +603,7 @@ window.WSW = (() => {
         if (!window.WaveSurfer) return setTimeout(create, 50);
         ws = WaveSurfer.create({
           container: wave, url: D.audio, height: "auto", normalize: true, dragToSeek: true,
-          waveColor: NEUTRAL, progressColor: "rgba(0,0,0,0)", cursorColor: "#ffffff", cursorWidth: 2,
+          waveColor: NEUTRAL, progressColor: "rgba(0,0,0,0)", cursorColor: "#ffba00", cursorWidth: 2,
           renderFunction: (channels, g) => {
             const data = channels[0], W = g.canvas.width, H = g.canvas.height, dpr = devicePixelRatio || 1;
             const bw = 3 * dpr, gap = 2 * dpr, n = Math.max(1, Math.floor(W / (bw + gap))), step = data.length / n;
@@ -731,8 +740,8 @@ window.WSW = (() => {
         h("button.thead", { "aria-expanded": "true", on: { click: (e) => {
           const closed = tcard.classList.toggle("closed");
           e.currentTarget.setAttribute("aria-expanded", String(!closed));
-        } } }, icon("chevron"), "Transcript",
-          h("span.sub", `· ${plural(res.turns.length, "turn")} · ${plural(res.words, "word")}`)),
+        } } }, icon("chevron"), h("span.thead-t", "Transcript"),
+          h("span.sub", `${plural(res.turns.length, "turn")} · ${plural(res.words, "word")}`)),
         h("div.tbody", h("div", h("div.turns", turns))));
       tcard.addEventListener("click", (e) => {
         const w = e.target.closest(".w, .ts");
@@ -751,8 +760,8 @@ window.WSW = (() => {
 
       return h("div.dgrid", tcard,
         h("aside.aside",
-          h("section.box.spk-box", h("div.box-h", "Speakers", h("span", `${res.speakers.length}`)), h("div.spk-list", spkRows)),
-          h("section.box.stats-box", h("div.box-h", "Stats"), stats)));
+          h("section.box.spk-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Speakers"), h("span", `${res.speakers.length}`)), h("div.spk-list", spkRows)),
+          h("section.box.stats-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Stats")), stats)));
     }
 
     function progressView() {

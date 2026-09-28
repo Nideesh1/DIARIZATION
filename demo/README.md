@@ -130,7 +130,7 @@ who is recorded before putting their voice in a video.
 Models behind the service: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 (CC-BY-4.0: credit NVIDIA if you show its output) and
 [pyannote speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
-(use is subject to its model terms on Hugging Face). Built with NiceGUI (MIT), wavesurfer.js (BSD-3-Clause), Inter (OFL) and Lucide icons (ISC).
+(use is subject to its model terms on Hugging Face). Built with NiceGUI (MIT), wavesurfer.js (BSD-3-Clause), Alumni Sans and Albert Sans (OFL) and Lucide icons (ISC).
 
 ## Files
 
@@ -143,7 +143,7 @@ Models behind the service: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/
 | `sql/schema.sql` | The `recordings` table |
 | `static/demo.js` | The whole front end in plain DOM: pages, recorder (MediaRecorder), uploads, waveform player, transcript/playback sync |
 | `static/demo.css` | Dark theme and layout (no Quasar widgets are used) |
-| `static/vendor/`, `static/fonts/` | wavesurfer.js 7 (BSD-3-Clause) and Inter (OFL), vendored with their licenses; Lucide icon paths (ISC) |
+| `static/vendor/`, `static/fonts/` | wavesurfer.js 7 (BSD-3-Clause) and the Alumni Sans + Albert Sans fonts (OFL), vendored with their licenses; Lucide icon paths (ISC) |
 | `Dockerfile`, `compose.yaml`, `.dockerignore` | One image for `ui` and `worker`; the whole stack |
 
 ## Troubleshooting: "service unreachable" on macOS (running outside Docker)

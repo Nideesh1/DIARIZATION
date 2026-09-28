@@ -122,8 +122,9 @@ app.add_static_files("/static", HERE / "static")
 # serves them and carries the live updates (server -> WSW.* calls) and the user's actions
 # (emitEvent("wsw", {...}) -> the page's handler) over its websocket.
 ui.add_head_html(
-    '<meta name="theme-color" content="#0b0c10">'
-    '<link rel="preload" href="/static/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>'
+    '<meta name="theme-color" content="#010101">'
+    '<link rel="preload" href="/static/fonts/AlbertSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
+    '<link rel="preload" href="/static/fonts/AlumniSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     '<link rel="stylesheet" href="/static/demo.css">'
     '<script src="/static/demo.js"></script>', shared=True)
 
