@@ -1,0 +1,10 @@
+Dockerfile.feas
+*.log
+gpu-*.txt
+out-*.log
+ref_*.py
+*.md
+live_test.py
+run-test.sh
+nasa2min.wav
+client/
