@@ -1,5 +1,6 @@
 # secrets
 asr.env
+.env
 asr.env.tmp
 *hf_token*
 
@@ -13,3 +14,7 @@ __pycache__/
 testdata/*.mp3
 testdata/*.wav
 testdata/careful-*/
+
+# demo app recordings and results
+demo/data/
+demo/.venv/
