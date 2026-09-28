@@ -3,10 +3,12 @@
 #   browser -> ui (NiceGUI) -> MinIO (audio) + Postgres (row: queued) -> Redis stream job
 #           -> worker (FastStream) -> GPU ASR service -> MinIO (result.json) + Postgres (stats)
 #           -> Redis pub/sub event -> ui pushes the new status to every open page
+#   while recording: browser mic (16 kHz PCM) -> ui /ws/live proxy -> GPU streaming ASR (:9101)
+#           -> live captions back over the same WebSockets
 #
 # Credentials below are DEV-ONLY defaults for a laptop demo. Postgres and Redis are not
 # published at all; the ui and MinIO ports are bound to 127.0.0.1.
-# ASR_URL / ASR_TOKEN come from demo/.env (env_file; never copied into the image).
+# ASR_URL / ASR_STREAM_URL / ASR_TOKEN come from demo/.env (env_file; never copied into the image).
 
 x-app-env: &app-env
   DATABASE_URL: postgresql://demo:demo-dev-only@postgres:5432/demo
@@ -31,7 +33,7 @@ services:
     command: ["python", "app.py"]
     ports:
       - "127.0.0.1:8080:8080"   # localhost only: mic access needs localhost; the app has no login
-    env_file: .env              # ASR_URL, ASR_TOKEN (for the health dot)
+    env_file: .env              # ASR_URL, ASR_TOKEN (health), ASR_STREAM_URL (live-captions proxy + health)
     environment: *app-env
     depends_on: *app-deps
     healthcheck:

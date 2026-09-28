@@ -1,8 +1,10 @@
 """ASR + diarization demo UI (NiceGUI).
 
-Record from the mic or upload a file; the audio goes to MinIO, a row to Postgres and a job
-onto a Redis stream for the worker (worker.py). Worker events arrive over Redis pub/sub and
-are pushed to every open page, so statuses update live.
+Two ways in. RECORD / upload: the audio goes to MinIO, a row to Postgres and a job onto a Redis
+stream for the worker (worker.py, the batch Parakeet + pyannote pass). LIVE: the browser streams
+the mic to the live service through /ws/live (live.py) and, on stop, POSTs the audio together
+with the live service's final segments; that is saved as a finished recording (source = live),
+no job. Events arrive over Redis pub/sub and are pushed to every open page, so statuses update live.
 Run:  cd demo && docker compose up -d --build   ->  http://localhost:8080
 """
 from __future__ import annotations
@@ -10,32 +12,45 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import re
 import secrets
+import shutil
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 from nicegui import Client, app, background_tasks, ui
+from starlette.datastructures import UploadFile
 
 import client
+import live
 import store
 
 HERE = Path(__file__).parent
-STATE = {"health_ok": None, "health": "checking"}
+STATE = {"health_ok": None, "health": "checking", "live_ok": None, "live": "checking"}
 LISTENERS: set[Callable[[dict], Awaitable[None]]] = set()   # one per open page
 
 
 # ------------------------------------------------------------------ jobs
+def new_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+
+
+def safe_ext(ext: str) -> str:
+    return ext if re.fullmatch(r"[a-z0-9]{1,5}", ext) else "bin"
+
+
 async def submit(name: str, ext: str, num_speakers: int | None, chunks: AsyncIterator[bytes],
                  content_type: str | None = None) -> str:
     """Audio -> MinIO, row -> Postgres (queued), job -> Redis stream."""
-    ext = ext if re.fullmatch(r"[a-z0-9]{1,5}", ext) else "bin"
-    rid = datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    ext = safe_ext(ext)
+    rid = new_id()
     ctype = content_type or mimetypes.guess_type(f"x.{ext}")[0] or "application/octet-stream"
     await store.put_stream(store.audio_key(rid, ext), chunks, ctype)
     await store.insert(rid, name, ext, num_speakers)
@@ -100,6 +115,93 @@ async def post_recording(request: Request, ext: str = "webm", num_speakers: int 
     return {"id": rid}
 
 
+# LIVE mode: what the live service (../stream) runs. The same names its GET /health reports.
+LIVE_MODELS = {"stt": os.environ.get("LIVE_ASR_MODEL", "nvidia/nemotron-3.5-asr-streaming-0.6b"),
+               "diarization": os.environ.get("LIVE_DIAR_MODEL", "nvidia/Nemotron-3-Diarization")}
+MAX_LIVE_RESULT = 8 << 20          # the segments JSON of a long session
+
+
+def live_result(raw: str, fallback_s: float | None) -> dict:
+    """The browser's copy of the live service's `final` segments, validated and shaped like the
+    batch service's result.json: segments + speakers + model. The live service has no word
+    timings, so `words` is empty and the detail page highlights whole segments instead.
+    ValueError on anything malformed."""
+    data = json.loads(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("segments"), list) or len(data["segments"]) > 50_000:
+        raise ValueError("segments must be a list")
+    segs = []
+    for g in data["segments"]:
+        spk, s, e, text = int(g["speaker"]), float(g["start"]), float(g["end"]), str(g.get("text") or "").strip()
+        if not (0 <= spk < 32 and math.isfinite(s) and math.isfinite(e)):
+            raise ValueError("bad segment")
+        if text:
+            s = max(0.0, s)
+            segs.append({"speaker": f"SPEAKER_{spk:02d}", "start": round(s, 2), "end": round(max(s, e), 2), "text": text[:10_000]})
+    segs.sort(key=lambda g: g["start"])
+    lat = data.get("latency_s")
+    return {"segments": segs, "words": [], "speakers": sorted({g["speaker"] for g in segs}),
+            "duration_s": fallback_s, "language": None, "source": "live",
+            "latency_s": round(float(lat), 2) if isinstance(lat, (int, float)) and 0 <= lat < 60 else None,
+            "model": dict(LIVE_MODELS)}
+
+
+@app.post("/api/recordings/live")
+async def post_live_recording(request: Request, ext: str = "webm", num_speakers: int | None = None,
+                              name: str | None = None):
+    """LIVE mode, on stop: one multipart POST with the recording (`audio`) and the live service's
+    final segments (`result`, JSON). Audio and result.json go to MinIO first, then the row is
+    inserted already done (source = live), so it can never be done without its transcript; any
+    failure on the way removes what was written. No job is queued."""
+    if int(request.headers.get("content-length") or 0) > store.MAX_UPLOAD + MAX_LIVE_RESULT:
+        return JSONResponse({"error": "too large"}, status_code=413)
+    form = await request.form(max_files=1, max_fields=1, max_part_size=MAX_LIVE_RESULT)
+    try:
+        audio, raw = form.get("audio"), form.get("result")
+        if not isinstance(audio, UploadFile) or not isinstance(raw, str):
+            return JSONResponse({"error": "expected multipart fields audio + result"}, status_code=422)
+        try:
+            res = live_result(raw, None)
+        except (ValueError, KeyError, TypeError) as e:
+            return JSONResponse({"error": f"bad result: {e}"}, status_code=422)
+        ext, rid = safe_ext(ext.lower()), new_id()
+        name = (name or "").strip()[:80] or f"Recording {datetime.now():%H:%M}"
+        ctype = (audio.content_type or "").split(";")[0] or mimetypes.guess_type(f"x.{ext}")[0] or "application/octet-stream"
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / f"audio.{ext}"
+                with open(path, "wb") as f:
+                    await asyncio.to_thread(shutil.copyfileobj, audio.file, f, 1 << 20)
+                size = path.stat().st_size
+                if not size or size > store.MAX_UPLOAD:
+                    raise store.UploadError("empty" if not size else "too large")
+                duration, _ = await asyncio.to_thread(store.prepare_audio, path)   # webm: remux so it seeks
+
+                async def chunks() -> AsyncIterator[bytes]:
+                    with open(path, "rb") as f:
+                        while b := f.read(1 << 20):
+                            yield b
+                await store.put_stream(store.audio_key(rid, ext), chunks(), ctype)
+            segs = res["segments"]
+            res["duration_s"] = duration or (segs[-1]["end"] if segs else None)
+            result_key = f"{rid}/result.json"
+            await store.put_bytes(result_key, json.dumps(res, indent=1).encode(), "application/json")
+            stats = store.speaker_stats(res)
+            await store.insert_live(rid, name, ext, speakers_hint(num_speakers), result_key=result_key,
+                                    duration_s=res["duration_s"], speakers=len(stats),
+                                    words=sum(len(g["text"].split()) for g in segs), speaker_stats=stats,
+                                    stt_model=LIVE_MODELS["stt"], diar_model=LIVE_MODELS["diarization"])
+        except store.UploadError as e:
+            await store.delete_objects(rid)
+            return JSONResponse({"error": str(e)}, status_code=413 if str(e) == "too large" else 422)
+        except BaseException:
+            await store.delete_objects(rid)
+            raise
+    finally:
+        await form.close()
+    await store.announce(rid, "done")
+    return {"id": rid}
+
+
 @app.get("/api/recordings/{rid}/result.json")
 async def get_result(rid: str):
     """The raw service response, as a download."""
@@ -116,10 +218,16 @@ async def api_health():
     return {"ok": True}
 
 
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket):
+    """Live captions while recording: proxied to the streaming ASR service (live.py)."""
+    await live.proxy(ws)
+
+
 async def health_loop() -> None:
     while True:
-        ok, text = await client.health()
-        STATE.update(health_ok=ok, health=text)
+        (ok, text), (lok, ltext) = await asyncio.gather(client.health(), live.health())
+        STATE.update(health_ok=ok, health=text, live_ok=lok, live=ltext)
         await asyncio.sleep(10)
 
 
@@ -164,10 +272,11 @@ ui.add_head_html(
     '<link rel="preload" href="/static/fonts/AlbertSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     '<link rel="preload" href="/static/fonts/AlumniSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     f'<link rel="stylesheet" href="/static/demo.css?v={_v("demo.css")}">'
+    f'<script>window.WSW_WORKLET = "/static/pcm-worklet.js?v={_v("pcm-worklet.js")}";</script>'
     f'<script src="/static/demo.js?v={_v("demo.js")}"></script>', shared=True)
 
 ROW_FIELDS = ("id", "name", "status", "note", "error", "duration_s", "processing_s", "rtf", "speakers",
-              "words", "stt_model", "diar_model", "num_speakers_hint", "speaker_stats", "speaker_names")
+              "words", "stt_model", "diar_model", "num_speakers_hint", "speaker_stats", "speaker_names", "source")
 
 
 def row_json(m: dict) -> dict:
@@ -175,7 +284,8 @@ def row_json(m: dict) -> dict:
 
 
 def health_json() -> dict:
-    return {"ok": STATE["health_ok"], "text": STATE["health"], "configured": client.CONFIGURED}
+    return {"ok": STATE["health_ok"], "text": STATE["health"], "configured": client.CONFIGURED,
+            "live": {"ok": STATE["live_ok"], "text": STATE["live"], "configured": live.CONFIGURED}}
 
 
 def mount(view: str, data: dict) -> None:
@@ -280,7 +390,9 @@ async def architecture() -> None:
 def build_result(m: dict, res: dict) -> dict:
     """The service response shaped for the page: speakers in order of appearance (pyannote's
     labels are not, and "Speaker 2" opening the recording reads wrong), their talk time, and
-    speaker turns (consecutive segments of one speaker) whose words carry [start, end]."""
+    speaker turns (consecutive segments of one speaker) whose words carry [start, end]. A live
+    recording has no word timings: each segment is then one "word" spanning the segment, so the
+    page highlights and seeks by segment (granularity "segment")."""
     segs, words = res.get("segments") or [], res.get("words") or []
     speakers = [{"id": x["speaker"], "name": m["speaker_names"].get(x["speaker"]) or f"Speaker {i + 1}",
                  "talk": x["seconds"]} for i, x in enumerate(store.speaker_stats(res))]
@@ -299,7 +411,10 @@ def build_result(m: dict, res: dict) -> dict:
         else:
             turns.append({"speaker": seg["speaker"], "start": seg["start"], "end": seg["end"], "words": mine})
     model = res.get("model") or {}
-    return {"speakers": speakers, "turns": turns, "words": len(words), "language": res.get("language"),
+    return {"speakers": speakers, "turns": turns, "language": res.get("language"),
+            "words": len(words) or sum(len(str(g.get("text", "")).split()) for g in segs),
+            "granularity": "word" if words else "segment", "source": m.get("source") or "batch",
+            "latency_s": res.get("latency_s"),
             "segments": [[g["speaker"], g["start"], g["end"]] for g in segs],
             "stt": model.get("stt"), "diar": model.get("diarization")}
 

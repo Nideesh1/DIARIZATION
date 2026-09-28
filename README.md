@@ -8,7 +8,8 @@ Send an audio file, get back the transcript with word timestamps and who spoke w
 - Runs fully offline once the models are downloaded; no Hugging Face token at runtime.
 
 This is a **batch** API: one request carries a whole recording and returns when it is
-done. It is not streaming. It is fast, though: about 40x real time per job (a 30-minute
+done. For live captions with speaker labels over WebSocket, see [`stream/`](stream/README.md)
+(Nemotron 3.5 streaming ASR + Nemotron-3-Diarization, ~0.2-0.55 s word latency). It is fast, though: about 40x real time per job (a 30-minute
 call takes about 45 s), and about 55 audio-minutes per minute with two jobs in flight
 on two RTX 3090s capped at 300 W.
 
@@ -62,14 +63,16 @@ curl -H "Authorization: Bearer $ASR_TOKEN" --data-binary @call.mp3 \
 ## Configuration (env)
 
 Defaults below are what `compose.yaml` and `run.sh` set; `app.py`'s own fallbacks are
-`DIAR_REPLICAS=3` and `MAX_JOBS=3`, which are too much for 2x 3090 at 300 W.
+`DIAR_REPLICAS=3` and `MAX_JOBS=3`, which are too much for 2x 3090 at 300 W. The defaults are
+single-user: one job at a time, idling at ~3.9 GB on GPU 0 (vs ~20 GB with two of each), with the
+same per-file speed. For throughput use `STT_REPLICAS=2 DIAR_REPLICAS=2 DIAR_DEVICES=cuda:0,cuda:1 MAX_JOBS=2`.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `ASR_TOKEN` | (asr.env) | Bearer token clients must send |
-| `STT_REPLICAS` / `STT_DEVICES` | `2` / `cuda:0` | Parakeet instances and the GPUs they round-robin over |
-| `DIAR_REPLICAS` / `DIAR_DEVICES` | `2` / `cuda:0,cuda:1` | pyannote instances and their GPUs |
-| `MAX_JOBS` | `2` | Concurrent jobs admitted |
+| `STT_REPLICAS` / `STT_DEVICES` | `1` / `cuda:0` | Parakeet instances and the GPUs they round-robin over |
+| `DIAR_REPLICAS` / `DIAR_DEVICES` | `1` / `cuda:0` | pyannote instances and their GPUs |
+| `MAX_JOBS` | `1` | Concurrent jobs admitted |
 | `CHUNK_S`, `OVERLAP_S` | `300`, `10` | STT chunking for long audio |
 | `MAX_BYTES`, `MAX_SECONDS` | 500 MB, 2 h | Request limits |
 | `RETRY_AFTER_S` | `15` | `Retry-After` on 503 |
@@ -89,6 +92,7 @@ With a single GPU, set `STT_DEVICES=cuda:0 DIAR_DEVICES=cuda:0` and change `devi
 | `prefetch.py`, `prefetch.sh` | One-off model download into the `asr-models` volume |
 | `gen_token.sh` | Create (or `--rotate`) the bearer token in `asr.env` |
 | `k8s-service.yaml` | Selector-less Service + Endpoints so k8s pods can reach the host container |
+| `stream/` | Live WebSocket service (separate container, port 9101); see `stream/README.md` |
 | `testdata/` | Test helpers: `tx.sh` (one request), `concurrent.sh`, `careful-concurrency.sh`, GPU/CPU monitors, `logcheck.sh` |
 
 Test clips are not in git (large). The ones used were NASA STS-41C mission audio (public domain)
@@ -109,7 +113,8 @@ docker run --rm asr-service:<tag> cat /opt/requirements.lock > requirements.lock
 
 ## Measured (2x RTX 3090, 300 W caps)
 
-- 2 concurrent jobs: 55 audio-minutes per minute; 3 jobs: 52 and GPU 0 peaked at 23.0 of 24 GB, so `MAX_JOBS=2`.
+- Default (1 of each, 1 job): 30-min file in 42.5 s, 2-min in 4.3 s; idle 3.9 GB on GPU 0.
+- 2 of each, 2 concurrent jobs: 55 audio-minutes per minute; 3 jobs: 52 and GPU 0 peaked at 23.0 of 24 GB.
 - Per job the models peak at about 6.7 GB on GPU 0 and 2.4 GB on GPU 1; idle about 3 GB and 0.5 GB.
 - Without the power caps, three concurrent jobs tripped a 1200 W PSU and froze the host.
   Cap both GPUs first, e.g. `nvidia-smi -pl 300`.

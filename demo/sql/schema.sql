@@ -21,8 +21,12 @@ CREATE TABLE IF NOT EXISTS recordings (
     stt_model         text,
     diar_model        text,
     speaker_names     jsonb       NOT NULL DEFAULT '{}',
-    speaker_stats     jsonb                      -- [{speaker, seconds, share}] in order of first appearance
+    speaker_stats     jsonb,                     -- [{speaker, seconds, share}] in order of first appearance
+    source            text        NOT NULL DEFAULT 'batch'   -- who made the transcript: the live
+                      CHECK (source IN ('live', 'batch'))    -- streaming service or the batch pass
 );
 -- columns added after the first release (CREATE TABLE IF NOT EXISTS leaves an existing table alone)
 ALTER TABLE recordings ADD COLUMN IF NOT EXISTS speaker_stats jsonb;
+ALTER TABLE recordings ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'batch'
+    CHECK (source IN ('live', 'batch'));
 CREATE INDEX IF NOT EXISTS recordings_created_at ON recordings (created_at DESC);

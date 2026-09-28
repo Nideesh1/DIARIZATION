@@ -15,9 +15,7 @@ import asyncio
 import json
 import logging
 import os
-import shutil
 import socket
-import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -36,25 +34,6 @@ log = logging.getLogger("worker")
 app = FastStream(store.broker)
 
 
-def prepare_audio(path: Path) -> tuple[float | None, bool]:
-    """Remux browser webm (it has no duration/cues, so players can't seek) and probe the
-    duration. Returns (seconds, remuxed)."""
-    remuxed = False
-    if path.suffix == ".webm" and shutil.which("ffmpeg"):
-        fixed = path.with_name("remux.webm")
-        p = subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(path), "-c", "copy",
-                            str(fixed)], capture_output=True, timeout=300)
-        if p.returncode == 0 and fixed.stat().st_size > 0:
-            fixed.replace(path)
-            remuxed = True
-    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
-                        str(path)], capture_output=True, text=True, timeout=60)
-    try:
-        return round(float(p.stdout.strip()), 2), remuxed
-    except ValueError:
-        return None, remuxed
-
-
 async def set_note(rid: str, note: str) -> None:
     await store.update(rid, note=note)
     await store.announce(rid, "processing", note)
@@ -66,7 +45,7 @@ async def run_job(m: dict) -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         audio = Path(tmp) / f"audio.{m['ext']}"
         await store.download(m["audio_key"], audio)
-        duration, remuxed = await asyncio.to_thread(prepare_audio, audio)
+        duration, remuxed = await asyncio.to_thread(store.prepare_audio, audio)
         if remuxed:
             await store.put_bytes(m["audio_key"], audio.read_bytes(), "audio/webm")
         if duration:

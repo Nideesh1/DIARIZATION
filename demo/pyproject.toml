@@ -9,6 +9,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "aiobotocore>=3.9.1",
     "faststream[redis]>=0.7.7",
+    "websockets>=15",
 ]
 
 [tool.uv]
