@@ -34,6 +34,9 @@ window.WSW = (() => {
     users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
     zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
     down: '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
+    gpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2"/>',
+    file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+    db: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
   };
 
   function icon(name, cls = "") {
@@ -99,7 +102,7 @@ window.WSW = (() => {
   let toastBox;
   function toast(msg, kind = "ok") {
     toastBox = toastBox || document.body.appendChild(h("div.toasts"));
-    const t = toastBox.appendChild(h("div.toast", { cls: kind }, icon(kind === "err" ? "alert" : "check"), msg));
+    const t = toastBox.appendChild(h("div.toast", { cls: kind }, msg));
     setTimeout(() => { t.classList.add("out"); setTimeout(() => t.remove(), 220); }, kind === "err" ? 6000 : 3200);
   }
 
@@ -164,31 +167,53 @@ window.WSW = (() => {
     return inp;
   }
 
-  // ------------------------------------------------------------ shell
-  let healthEl, bannerEl;
-  function shell() {
+  // ------------------------------------------------------------ shell (header + footer, as in the reference)
+  const today = new Date().toISOString().slice(0, 10);
+  let healthEls = [], bannerEl;
+  function shell(docRef) {
     const root = document.getElementById("wsw");
     root.replaceChildren();
-    healthEl = h("div.health", { title: "GPU transcription service" }, h("span.dot"), h("span", "Checking…"));
-    root.append(h("div.top-seam"), h("header.topbar",
-      h("a.brand", { href: "/" }, h("img", { src: "/static/favicon.svg", alt: "" }), "Who said what"),
-      h("div.spacer"), h("span.doc-ref", "Speech / Speakers / Transcript"), healthEl));
-    bannerEl = root.appendChild(h("div", { hidden: true }));
-    const main = root.appendChild(h("main.wrap"));
-    root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization")));
+    healthEls = [];
+    const pill = h("span.fc-pill.pill-off", { title: "GPU transcription service" }, "Checking");
+    healthEls.push({ kind: "pill", el: pill });
+    root.append(h("div.top-seam"),
+      h("header.site-header.sec",
+        h("a.wordmark", { href: "/" }, "Home lab · Speech"),
+        h("div.hdr-right", h("span.doc-ref", `${docRef} / ${today}`), pill)));
+    bannerEl = root.appendChild(h("div.sec", { hidden: true }, h("div.banner")));
+    const main = root.appendChild(h("main.main"));
+    root.append(h("footer.site-footer.sec", h("div.f-note", "Who said what · self-hosted"), h("div.f-note", `asr-demo / diarization / ${today}`)));
     return main;
   }
 
+  let lastHealth = null;
   function health(v) {
-    if (!healthEl) return;
-    healthEl.className = "health " + (v.ok ? "ok" : v.ok === false ? "bad" : "");
-    healthEl.lastChild.textContent = v.ok ? "ASR online" : v.ok === false ? `ASR ${v.text}` : "Checking…";
-    healthEl.title = `ASR service: ${v.text}`;
+    lastHealth = v;
+    for (const { kind, el } of healthEls) {
+      if (kind === "pill") {
+        el.className = "fc-pill " + (v.ok ? "pill-live" : v.ok === false ? "pill-fail" : "pill-off");
+        el.textContent = v.ok ? "ASR online" : v.ok === false ? "ASR offline" : "Checking";
+        el.title = `ASR service: ${v.text}`;
+      } else {
+        el.replaceChildren(h("span.dot", { cls: v.ok ? "dot-live" : v.ok === false ? "dot-down" : "dot-pending" }),
+          v.ok ? "Online · Parakeet + pyannote" : v.ok === false ? `Unreachable · ${v.text}` : "Checking…");
+      }
+    }
+    if (!bannerEl) return;
     bannerEl.hidden = v.configured !== false;
-    bannerEl.className = "banner";
-    bannerEl.textContent = "ASR_URL / ASR_TOKEN are not set: recordings are saved but cannot be transcribed. Set them in demo/.env and restart.";
+    bannerEl.firstChild.textContent = "ASR_URL / ASR_TOKEN are not set: recordings are saved but cannot be transcribed. Set them in demo/.env and restart.";
   }
 
+  // ------------------------------------------------------------ reference components
+  // flow row: nodes (circle = a person/thing, gold square = a system) joined by → arrows, ending in a teal result pill
+  const node = (ic, cap, { sq = false, cls = "" } = {}) =>
+    h("div.node", { cls }, h("div.node-ico", { cls: sq ? "sq" : "" }, typeof ic === "string" ? icon(ic) : ic), h("div.node-cap", { cls: sq ? "sq" : "" }, cap));
+  const arrow = (pad = false) => h("div.arrow", { cls: pad ? "pad" : "" }, "→");
+  const result = (text) => h("div.result", `✓ ${text}`);
+  const sideTitle = (text, sub) => h("div.side-title", h("span.side-rule"), text, sub ? h("span.sub", sub) : null);
+  const sectionHeader = (text) => h("div.section-header", h("span.eyebrow-rule"), h("span.section-eyebrow", text));
+
+  // ------------------------------------------------------------ uploads (recorder + files)
   // ------------------------------------------------------------ uploads (recorder + files)
   function postAudio(blob, { ext, name, speakers, onProgress }) {
     const q = new URLSearchParams({ ext });
@@ -215,25 +240,53 @@ window.WSW = (() => {
     let speakersPref = localStorage.getItem("wsw.speakers") || "";
 
     function mount(data) {
-      const main = shell();
+      const main = shell("Speech / Speakers");
       main.append(
-        h("section.hero",
+        h("section.hero.sec",
           h("div.hero-head",
-            h("div.eyebrow", h("span.eyebrow-rule"), "Parakeet ASR + pyannote diarization, self-hosted"),
             h("div.product", "Who said what"),
             h("h1", "Record it.", h("br"), "Know who spoke."),
-            h("p", "Record a conversation or drop in a file. Get a word-timed transcript, split by speaker, in seconds.")),
-          h("div.hero-side",
-            h("div.side-title", h("span.side-rule"), "New recording"),
-            h("div.studio", Recorder.el(), dropZone()))),
-        h("section.library",
-          h("div.list-head",
-            h("div", h("div.split-label", "Library"), h("h2", "Recordings")),
-            (countEl = h("span.count.tnum", "0"))),
-          (grid = h("div.grid"))));
+            h("p.hero-lead", "Record a conversation or drop in a file. Parakeet writes it down word by word, pyannote works out who is speaking, and you get a transcript split by speaker in seconds, on your own GPUs.")),
+          h("div",
+            sideTitle("New recording"),
+            h("div.benefits", Recorder.el(), dropZone()))),
+        h("div.split-header.sec", h("div",
+          (countEl = h("div.split-label", "Library")),
+          h("h2.split-title", "Your recordings"),
+          h("p.split-sub", "Transcribed on two RTX 3090s, a few seconds per minute of audio."))),
+        h("div.features-split.sec", (grid = h("div.grid"))),
+        architecture(), environments());
+      health(lastHealth || data.health);
       pageDrop();
       setRows(data.rows, true);
       setInterval(() => document.querySelectorAll("[data-ago]").forEach((el) => (el.textContent = ago(el.dataset.ago))), 30000);
+    }
+
+    function architecture() {
+      const card = (stamp, name, desc, tags) => h("div.arch-card", h("div.arch-stamp", stamp), h("h3.arch-name", name),
+        h("p.arch-desc", desc), h("div.stack-tags", tags.map((t) => h("span.tag", t))));
+      return h("div.arch-wrap.sec", sectionHeader("Technical Architecture"),
+        h("div.arch-grid",
+          card("Frontend · ui", "Who said what", "This page. NiceGUI serves it and pushes every status change over its websocket; the recorder, the drop zone and the player are plain JavaScript.",
+            ["NiceGUI", "Custom JS", "wavesurfer.js", "MediaRecorder"]),
+          card("Worker · FastStream", "Job runner", "Takes jobs off a Redis stream, sends the audio to the GPU service and writes the result back. Two jobs in flight; an interrupted job is picked up again on restart.",
+            ["FastStream", "Redis Streams", "Consumer group", "2 in flight"]),
+          card("Storage", "MinIO + Postgres", "Audio and the raw service response live in MinIO; Postgres keeps one row per recording with its status and numbers. The browser plays audio from a presigned URL.",
+            ["MinIO", "Postgres", "Presigned URLs", "Redis pub/sub"]),
+          card("GPU · ASR service", "Parakeet + pyannote", "Speech recognition with word timestamps, then speaker diarization, on the home lab box. Roughly forty times faster than real time.",
+            ["Parakeet TDT 0.6B v3", "pyannote community-1", "2× RTX 3090", "~40× real time"])));
+    }
+
+    function environments() {
+      const gpu = h("div.env-status");
+      healthEls.push({ kind: "env", el: gpu });
+      const cell = (tag, stamp, name, url, status) => h(tag, { cls: "env-cell", ...(tag === "a" ? { href: url.startsWith("http") ? url : `http://${url}`, target: "_blank", rel: "noopener" } : {}) },
+        h("div.env-stamp", stamp), h("div.env-name", name), h("div.env-url", url), status);
+      return h("div.deploy-wrap.sec", sectionHeader("Where it runs"),
+        h("div.deploy-grid",
+          cell("div", "Environment 01", "Local UI", "localhost:8080", h("div.env-status", h("span.dot.dot-live"), "Live · this page")),
+          cell("div", "Environment 02", "GPU box", "ASR service on the LAN", gpu),
+          cell("a", "Environment 03", "MinIO console", "localhost:9001", h("div.env-status", h("span.dot.dot-live"), "Object store · recordings bucket"))));
     }
 
     function speakersControl() {
@@ -244,26 +297,28 @@ window.WSW = (() => {
         seg.append(h("button", { "data-v": v, role: "radio", on: { click: () => { speakersPref = v; localStorage.setItem("wsw.speakers", v); paint(); } } }, label));
       }
       paint();
-      return h("div.field-label", "Speakers", seg);
+      return h("div.field", "Speakers", seg);
     }
 
-    // ---- recorder
+    // ---- recorder: card 01, the "You" node of its flow row is the record button
     const Recorder = (() => {
-      let panel, btn, timeEl, hintEl, canvas, rec = null, stream = null, ctx = null, an = null, raf = 0, t0 = 0, chunks = [], mime = "", state = "idle";
+      let panel, btn, capEl, qText, gpuNode, canvas, rec = null, stream = null, ctx = null, an = null, raf = 0, t0 = 0, chunks = [], mime = "", state = "idle";
       const levels = [];
       const types = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4", "audio/webm"];
       const extOf = (m) => (m.includes("ogg") ? "ogg" : m.includes("mp4") ? "m4a" : "webm");
 
       function el() {
         btn = h("button.rec-btn", { "aria-label": "Start recording", on: { click: toggle } }, icon("mic"));
-        timeEl = h("div.rec-time", "00:00");
-        hintEl = h("div.rec-hint", "Tap to record from your microphone");
-        canvas = h("canvas.rec-wave", { height: 64 });
-        panel = h("div.panel.rec-panel",
-          h("div.stamp", "01 · Microphone"),
-          h("div.rec-main", btn, h("div.rec-info", timeEl, hintEl)),
-          canvas,
-          h("div.rec-foot", speakersControl(), h("span.field-label.kbd-hint", "Space to start / stop")));
+        capEl = h("div.node-cap", "You");
+        qText = h("span.qtext", "“Tap to start”");
+        canvas = h("canvas.rec-wave", { height: 20 });
+        gpuNode = node("gpu", "Parakeet + pyannote", { sq: true });
+        panel = h("div.bcard.rec-card",
+          h("div.bstamp", "01 · Microphone"),
+          h("strong.btitle", "Record a conversation"),
+          h("div.quote.rec-quote", qText, canvas),
+          h("div.flow.tight", h("div.node", btn, capEl), arrow(), gpuNode, arrow(), result("Speaker-labelled transcript")),
+          h("div.bnote.row", speakersControl(), h("span.kbd-hint", "Space to start / stop")));
         requestAnimationFrame(draw);
         addEventListener("resize", () => draw());
         document.addEventListener("keydown", (e) => {
@@ -287,19 +342,17 @@ window.WSW = (() => {
           an.getFloatTimeDomainData(buf);
           let s = 0; for (const v of buf) s += v * v;
           levels.push(Math.min(1, Math.sqrt(s / buf.length) * 5));
-          timeEl.textContent = timer((performance.now() - t0) / 1000);
+          qText.textContent = `“Recording… ${timer((performance.now() - t0) / 1000)}”`;
         }
-        const bw = 3 * dpr, gap = 3 * dpr, n = Math.floor(W / (bw + gap));
+        const bw = 2 * dpr, gap = 3 * dpr, n = Math.floor(W / (bw + gap));
         if (levels.length > n) levels.splice(0, levels.length - n);
         for (let i = 0; i < n; i++) {
           const v = levels[levels.length - n + i];
           const x = i * (bw + gap);
-          const hh = v == null ? 2 * dpr : Math.max(3 * dpr, v * H * 0.92);
-          const fade = v == null ? 1 : Math.min(1, 0.35 + (i / n) * 0.9);
-          g.fillStyle = v == null ? "rgba(200,200,200,0.1)" : `rgba(220, 96, 72, ${fade})`;
-          g.beginPath();
-          g.roundRect(x, (H - hh) / 2, bw, hh, bw / 2);
-          g.fill();
+          const hh = v == null ? 1 * dpr : Math.max(2 * dpr, v * H);
+          const fade = v == null ? 1 : Math.min(1, 0.3 + (i / n) * 0.9);
+          g.fillStyle = v == null ? "rgba(200,200,200,0.14)" : `rgba(224, 104, 80, ${fade})`;
+          g.fillRect(x, (H - hh) / 2, bw, hh);
         }
         if (an) raf = requestAnimationFrame(draw);
       }
@@ -307,11 +360,13 @@ window.WSW = (() => {
       function setState(s) {
         state = s;
         panel.classList.toggle("live", s === "recording");
+        gpuNode.classList.toggle("busy", s === "uploading");
         btn.replaceChildren(icon(s === "recording" ? "stop" : "mic"));
         btn.disabled = s === "starting" || s === "uploading";
         btn.setAttribute("aria-label", s === "recording" ? "Stop recording" : "Start recording");
-        hintEl.textContent = { idle: "Tap to record from your microphone", starting: "Waiting for the microphone…",
-          recording: "Recording · tap to stop", uploading: "Uploading…" }[s];
+        capEl.className = "node-cap" + (s === "recording" ? " rec" : "");
+        capEl.textContent = { idle: "You", starting: "You", recording: "Recording", uploading: "Sent" }[s];
+        if (s !== "recording") qText.textContent = { idle: "“Tap to start”", starting: "“Waiting for the microphone…”", uploading: "“Uploading…”" }[s];
       }
 
       async function toggle() {
@@ -356,7 +411,6 @@ window.WSW = (() => {
         if (!blob.size) { setState("idle"); toast("Empty recording", "err"); return; }
         const r = await postAudio(blob, { ext: extOf(mime), speakers: speakersPref });
         setState("idle");
-        timeEl.textContent = "00:00";
         levels.length = 0; draw();
         if (r.error) toast(`Upload failed: ${r.error}`, "err");
         else toast("Recording saved, transcribing now");
@@ -364,22 +418,28 @@ window.WSW = (() => {
       return { el };
     })();
 
-    // ---- file upload (drop zone, page-wide drop, browse)
-    let dropEl, dropBody, picker;
+    // ---- file upload: card 02 is the drop zone (plus page-wide drop and browse)
+    let dropEl, quoteEl, storeNode, picker;
     const AUDIO_EXT = /\.(wav|mp3|m4a|aac|flac|ogg|oga|opus|webm|mp4|mov|mkv|wma|aiff?|amr|3gp)$/i;
     function dropZone() {
       picker = h("input", { type: "file", accept: "audio/*,video/*", multiple: true, hidden: true,
         on: { change: () => { uploadFiles([...picker.files]); picker.value = ""; } } });
-      dropBody = h("div", { style: { display: "contents" } });
-      dropEl = h("div.panel.drop", { role: "button", tabindex: 0, "aria-label": "Upload audio files",
-        on: { click: () => picker.click(), keydown: (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), picker.click()) } },
-        h("div.stamp", "02 · Upload"), dropBody, picker);
+      quoteEl = h("div.quote.up-quote");
+      storeNode = node("db", "Object store", { sq: true });
+      dropEl = h("div.bcard.drop-card", { role: "button", tabindex: 0, "aria-label": "Upload audio files",
+        on: { click: () => picker.click(), keydown: (e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), e.stopPropagation(), picker.click()) } },
+        h("div.bstamp", "02 · Upload"),
+        h("strong.btitle", "Drop a recording"),
+        quoteEl,
+        h("div.flow", node("file", "Your file"), arrow(), storeNode, arrow(), node("gpu", "Worker", { sq: true }), arrow(), result("Who said what")),
+        h("div.bnote", "wav, mp3, m4a, flac, ogg, webm or a video. Drop it anywhere on this page, or ", h("span.browse", "browse your files"), "."),
+        picker);
       idleDrop();
       return dropEl;
     }
     function idleDrop() {
-      dropBody.replaceChildren(h("div.drop-ico", icon("upload")), h("div.drop-title", "Drop an audio file"),
-        h("div.drop-sub", "or ", h("u", "browse your files")), h("div.drop-fmt", ["wav", "mp3", "m4a", "flac", "ogg", "webm", "video"].map((f) => h("span.tag", f))));
+      quoteEl.replaceChildren("“interview.mp3, 12:40”");
+      storeNode.classList.remove("busy");
     }
     function pageDrop() {
       const veil = document.body.appendChild(h("div.drag-veil", h("div", icon("upload"), "Drop to transcribe")));
@@ -403,9 +463,8 @@ window.WSW = (() => {
       for (const [i, f] of ok.entries()) {
         const bar = h("i", { style: { width: "0%" } });
         const pct = h("span.tnum", "0%");
-        dropBody.replaceChildren(h("div.drop-ico", h("div.spin")),
-          h("div.drop-title", ok.length > 1 ? `Uploading ${i + 1} of ${ok.length}` : "Uploading"),
-          h("div.drop-sub", `${f.name} · `, pct), h("div.bar.accent.upbar", bar));
+        storeNode.classList.add("busy");
+        quoteEl.replaceChildren(h("div", `“${f.name}” · `, ok.length > 1 ? `${i + 1} of ${ok.length} · ` : "", pct), h("div.bar", bar));
         const stem = f.name.replace(/\.[^.]+$/, "").replace(/[_]+/g, " ").trim().slice(0, 80);  // the display font draws "_" very wide
         const ext = (f.name.match(/\.([a-z0-9]{1,5})$/i) || [, "bin"])[1].toLowerCase();
         const r = await postAudio(f, { ext, name: stem, speakers: speakersPref,
@@ -417,10 +476,10 @@ window.WSW = (() => {
       idleDrop();
     }
 
-    // ---- cards
+    // ---- library cards (the reference's "currently live" feature cards)
     function setRows(list, first = false) {
       rows = list;
-      countEl.textContent = list.length;
+      countEl.textContent = list.length ? `Library · ${list.length}` : "Library";
       const seen = new Set();
       let prev = null;
       for (const m of list) {
@@ -448,50 +507,56 @@ window.WSW = (() => {
       }
       let empty = grid.querySelector(".empty");
       if (!list.length && !empty) {
-        grid.append(h("div.empty", h("div.empty-art", [18, 32, 24, 40, 20, 30, 14].map((v, i) => h("i", { style: { height: `${v}px`, animationDelay: `${i * 0.12}s` } }))),
-          h("h3", "No recordings yet"), h("p", "Press the red button to record a conversation, or drop an audio file anywhere on this page.")));
+        grid.append(h("div.feature-card.empty", h("div.fc-stamp", "Empty"), h("h3.fc-name", "No recordings yet"),
+          h("p.fc-desc", "Press the record button to capture a conversation, or drop an audio file anywhere on this page."),
+          h("div.fc-foot", h("span.fc-pill.pill-soon", "Waiting"))));
       } else if (list.length && empty) empty.remove();
     }
 
     function card(m) {
-      const c = { el: h("div.card", { role: "link", tabindex: 0 }), id: m.id };
+      const c = { el: h("div.feature-card", { role: "link", tabindex: 0 }), id: m.id };
       c.el.addEventListener("click", (e) => { if (!c.editing && !e.target.closest("button, input")) location.href = `/r/${m.id}`; });
       c.el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === c.el) location.href = `/r/${m.id}`; });
       fillCard(c, m);
       return c;
     }
 
+    const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
     function fillCard(c, m) {
       c.m = m;
       const st = m.status;
-      const badge = h("div.badge", { cls: st }, st === "processing" ? h("div.spin") : icon(st === "failed" ? "alert" : st === "queued" ? "clock" : "wave"));
-      const sub = [h("span", { "data-ago": m.created_at }, ago(m.created_at))];
-      if (m.duration_s) sub.push(" · ", h("span.tnum", clock(m.duration_s)));
-      const nameEl = h("div.card-name", { title: m.name }, m.name);
+      const desc = [h("span", longDate(m.created_at))];
+      if (m.duration_s) desc.push(" · ", h("span.tnum", clock(m.duration_s)));
+      desc.push(" · ", h("span", { "data-ago": m.created_at }, ago(m.created_at)));
+      const nameEl = h("h3.fc-name", { title: m.name }, m.name);
       const more = h("button.icon-btn.menu-btn", { "aria-label": "More actions", on: { click: (e) => { e.stopPropagation(); cardMenu(c, more); } } }, icon("more"));
       c.nameEl = nameEl;
-      c.el.replaceChildren(
-        h("div.card-top", badge, h("div.card-title", h("div.stamp", { cls: st }, STAMP[st] || st), nameEl, h("div.card-sub", sub)), more),
-        h("div.card-foot", footer(c, m)));
+      c.el.replaceChildren(more, h("div.fc-stamp", { cls: st }, STAMP[st] || st), nameEl, h("p.fc-desc", desc),
+        h("ul.fc-list", bullets(m)), h("div.fc-foot", foot(c, m)));
     }
 
-    const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
-    function footer(c, m) {
+    function bullets(m) {
       if (m.status === "done") {
         const n = m.speakers || 0;
-        return [h("span.dots-wrap", h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))),
-                  n ? plural(n, "speaker") : "No speech"),
-                speed(m.rtf) ? h("span.pill.speed", icon("zap"), speed(m.rtf)) : null];
+        return [h("li", n ? h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))) : null,
+                  n ? plural(n, "speaker") : "No speech found"),
+                speed(m.rtf) ? h("li", speed(m.rtf)) : null,
+                m.words != null ? h("li", plural(m.words, "word")) : null];
       }
-      if (m.status === "queued") return [h("span.pill.queued", "Queued"), h("span.steps-count", "waiting for a worker")];
+      if (m.status === "queued") return [h("li", "Waiting for a worker"), h("li", m.num_speakers_hint ? `${m.num_speakers_hint} speakers expected` : "Speakers: auto")];
       if (m.status === "processing") {
         const step = /^preparing/.test(m.note || "") ? 1 : 2;
-        return h("div.steps",
-          h("div.steps-row", h("span.steps-note", m.note || "processing"), h("span.steps-count", `step ${step} of 2`)),
-          h("div.bar.indet", h("i", { style: { width: step === 1 ? "35%" : "75%" } })));
+        return [h("li", `${cap(m.note || "processing")}…`), h("li", `Step ${step} of 2`, h("div.bar.indet", h("i", { style: { width: step === 1 ? "35%" : "75%" } })))];
       }
-      return h("div.fail", h("div.fail-msg", { title: m.error || "" }, m.error || "Failed"),
-        h("button.btn.btn-sm", { on: { click: (e) => { e.stopPropagation(); send("retry", { id: m.id }); } } }, icon("retry"), "Retry"));
+      return [h("li.err", { title: m.error || "" }, m.error || "Failed")];
+    }
+
+    function foot(c, m) {
+      if (m.status === "done") return h("span.fc-pill.pill-live", "Done");
+      if (m.status === "queued") return h("span.fc-pill.pill-soon.pulse", "Queued");
+      if (m.status === "processing") return h("span.fc-pill.pill-eng.pulse", "Processing");
+      return [h("span.fc-pill.pill-fail", "Failed"),
+        h("button.btn.primary", { on: { click: (e) => { e.stopPropagation(); send("retry", { id: m.id }); } } }, icon("retry"), "Retry")];
     }
 
     function cardMenu(c, anchor) {
@@ -508,7 +573,7 @@ window.WSW = (() => {
         if (!v) return c.m.name;
         send("rename", { id: c.m.id, name: v });
         return v;
-      }, { cls: "card-name", label: "Recording name" });
+      }, { cls: "fc-name", label: "Recording name" });
       inp.addEventListener("blur", () => setTimeout(() => {
         c.editing = false;
         fillCard(c, { ...c.m, name: inp.value || c.m.name });
@@ -530,15 +595,16 @@ window.WSW = (() => {
   // ------------------------------------------------------------ detail
   const Detail = (() => {
     let D = null;           // {row, audio, result}
-    let ws = null, main, titleInp, metaEl, playBtn, timeEl, dimEl, bodySlot, colorOf = {}, nameEls = [], words = [], cur = -1, curTurn = null;
+    let ws = null, main, titleInp, metaEl, stampEl, playBtn, timeEl, dimEl, bodySlot, colorOf = {}, nameEls = [], words = [], cur = -1, curTurn = null;
     let follow = true, jumpBtn, rafId = 0, elapsedIv = 0, lastUserScroll = 0;
 
     function mount(data) {
       D = data;
       if (ws) { ws.destroy(); ws = null; }
-      main = shell();
+      main = shell("Recording / Transcript");
+      health(lastHealth || data.health);
       if (!D.row) {
-        main.append(h("div.notfound", h("h1", "Recording not found"), h("p", "It may have been deleted."),
+        main.append(h("div.notfound.sec", h("div.fc-stamp", "404"), h("h1", "Recording not found"), h("p", "It may have been deleted."),
           h("a.btn", { href: "/" }, icon("back"), "All recordings")));
         return;
       }
@@ -546,28 +612,33 @@ window.WSW = (() => {
       colorOf = {};
       (res ? res.speakers : []).forEach((s, i) => (colorOf[s.id] = PALETTE[i % PALETTE.length]));
 
-      titleInp = inlineInput(r.name, (v) => { if (!v) return D.row.name; D.row.name = v; send("rename", { id: r.id, name: v }); document.title = v; return v; }, { label: "Recording name" });
+      titleInp = inlineInput(r.name, (v) => { if (!v) return D.row.name; D.row.name = v; send("rename", { id: r.id, name: v }); document.title = v; return v; }, { cls: "dname", label: "Recording name" });
       document.title = r.name;
       metaEl = h("div.meta");
+      stampEl = h("div.fc-stamp");
       const actions = h("div.dactions",
         res ? h("a.btn", { href: `/api/recordings/${r.id}/result.json`, download: `${r.id}.json` }, icon("download"), h("span", "Download JSON")) : null,
         h("button.icon-btn.danger", { "aria-label": "Delete recording", title: "Delete", on: { click: del } }, icon("trash")));
-      main.append(h("div.dhead",
-        h("div.dtitle", h("a.back", { href: "/" }, icon("back"), "All recordings"), titleInp, metaEl), actions));
+      main.append(h("section.dhead.sec",
+        h("a.back", { href: "/" }, icon("back"), "All recordings"),
+        h("div.drow", h("div.dtitle", stampEl, titleInp, metaEl), actions)));
       paintMeta();
 
-      main.append(player());
-      bodySlot = h("div");
+      main.append(h("div.sec", player()));
+      bodySlot = h("section.dbody.sec");
       main.append(bodySlot);
       renderBody();
     }
 
+    const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
     function paintMeta() {
-      const r = D.row, res = D.result, parts = [h("span", icon("calendar"), longDate(r.created_at))];
-      if (r.duration_s) parts.push(h("span.tnum", icon("clock"), clock(r.duration_s)));
-      if (res) parts.push(h("span", icon("users"), plural(res.speakers.length, "speaker")));
-      if (speed(r.rtf)) parts.push(h("span", icon("zap"), speed(r.rtf)));
+      const r = D.row, res = D.result, parts = [h("span", longDate(r.created_at))];
+      if (r.duration_s) parts.push(h("span.tnum", clock(r.duration_s)));
+      if (res) parts.push(h("span", plural(res.speakers.length, "speaker")));
+      if (speed(r.rtf)) parts.push(h("span", speed(r.rtf)));
       metaEl.replaceChildren(...parts);
+      stampEl.className = `fc-stamp ${r.status}`;
+      stampEl.textContent = STAMP[r.status] || r.status;
     }
 
     // ---- player: wavesurfer with speaker-coloured bars, a speaker lane, dimmed unplayed part
@@ -603,10 +674,10 @@ window.WSW = (() => {
         if (!window.WaveSurfer) return setTimeout(create, 50);
         ws = WaveSurfer.create({
           container: wave, url: D.audio, height: "auto", normalize: true, dragToSeek: true,
-          waveColor: NEUTRAL, progressColor: "rgba(0,0,0,0)", cursorColor: "#ffba00", cursorWidth: 2,
+          waveColor: NEUTRAL, progressColor: "rgba(0,0,0,0)", cursorColor: "#f4b93c", cursorWidth: 1,
           renderFunction: (channels, g) => {
             const data = channels[0], W = g.canvas.width, H = g.canvas.height, dpr = devicePixelRatio || 1;
-            const bw = 3 * dpr, gap = 2 * dpr, n = Math.max(1, Math.floor(W / (bw + gap))), step = data.length / n;
+            const bw = 2 * dpr, gap = 2 * dpr, n = Math.max(1, Math.floor(W / (bw + gap))), step = data.length / n;
             const dur = duration() || 1, peaks = new Float32Array(n);
             let max = 0;
             for (let i = 0; i < n; i++) {
@@ -616,11 +687,9 @@ window.WSW = (() => {
             }
             for (let i = 0; i < n; i++) {
               const spk = speakerAt(((i + 0.5) / n) * dur);
-              const hh = Math.max(2 * dpr, (peaks[i] / (max || 1)) * H * 0.96);
+              const hh = Math.max(1 * dpr, (peaks[i] / (max || 1)) * H * 0.96);
               g.fillStyle = spk ? colorOf[spk] || NEUTRAL : NEUTRAL;
-              g.beginPath();
-              g.roundRect(i * (bw + gap), (H - hh) / 2, bw, hh, bw / 2);
-              g.fill();
+              g.fillRect(i * (bw + gap), (H - hh) / 2, bw, hh);
             }
           },
         });
@@ -690,12 +759,11 @@ window.WSW = (() => {
       if (ws && ws.isPlaying() && follow) { follow = false; if (cur >= 0) jumpBtn.classList.toggle("on", !inView(words[cur].el)); }
     }
 
-    // ---- body: result (speakers, transcript, stats) or live progress
+    // ---- body: result (transcript | speakers + stats) or the live pipeline
     function renderBody() {
       clearInterval(elapsedIv);
       words = []; cur = -1; curTurn = null;
-      if (D.result) bodySlot.replaceChildren(resultView());
-      else bodySlot.replaceChildren(h("div.box", progressView()));
+      bodySlot.replaceChildren(D.result ? resultView() : progressView());
     }
 
     function resultView() {
@@ -721,7 +789,7 @@ window.WSW = (() => {
           h("div.share", h("div.track", h("i", { style: { width: `${pct}%` } })), h("b.tnum", `${pct}%`), h("span.tnum", clock(s.talk))));
       });
 
-      // transcript
+      // transcript: one reference card per speaker turn
       const idx = Object.fromEntries(res.speakers.map((s, i) => [s.id, i]));
       const turns = res.turns.map((t) => {
         const i = idx[t.speaker] ?? 0, s = res.speakers[i] || { name: t.speaker };
@@ -733,17 +801,18 @@ window.WSW = (() => {
           text.append(el);
         });
         return h("div.turn", { vars: { "--c": colorOf[t.speaker] || NEUTRAL } },
-          h("div.avatar", { "data-spk": t.speaker, vars: { "--c": colorOf[t.speaker] || NEUTRAL } }, avatarText(s.name, i)),
-          h("div", h("div.tmeta", h("span.tname", { "data-spk": t.speaker }, s.name), h("button.ts", { "data-s": t.start }, clock(t.start))), text));
+          h("div.tmeta", h("div.avatar", { "data-spk": t.speaker, vars: { "--c": colorOf[t.speaker] || NEUTRAL } }, avatarText(s.name, i)),
+            h("span.tname", { "data-spk": t.speaker }, s.name), h("button.ts", { "data-s": t.start }, clock(t.start))),
+          text);
       });
-      const tcard = h("section.box.tcard",
+      const tcol = h("section.tcol",
         h("button.thead", { "aria-expanded": "true", on: { click: (e) => {
-          const closed = tcard.classList.toggle("closed");
+          const closed = tcol.classList.toggle("closed");
           e.currentTarget.setAttribute("aria-expanded", String(!closed));
-        } } }, icon("chevron"), h("span.thead-t", "Transcript"),
-          h("span.sub", `${plural(res.turns.length, "turn")} · ${plural(res.words, "word")}`)),
+        } } }, h("div.side-title", h("span.side-rule"), "Transcript", icon("chevron", "chev"),
+          h("span.sub", `${plural(res.turns.length, "turn")} · ${plural(res.words, "word")}`))),
         h("div.tbody", h("div", h("div.turns", turns))));
-      tcard.addEventListener("click", (e) => {
+      tcol.addEventListener("click", (e) => {
         const w = e.target.closest(".w, .ts");
         if (!w || !ws) return;
         ws.setTime(+w.dataset.s + 0.01);
@@ -751,44 +820,46 @@ window.WSW = (() => {
         ws.play();
       });
 
-      const stat = (l, v, cls = "") => h("div.stat", { cls }, h("div.stat-l", l), h("div.stat-v", { cls: cls === "accent" ? "accent" : "", title: v }, v));
+      const stat = (l, v, accent) => h("div.stat", h("div.env-stamp", l), h("div.env-name", { cls: accent ? "accent" : "", title: v }, v));
       const stats = h("div.stats",
         stat("Audio", clock(r.duration_s)), stat("Processing", secs(r.processing_s)),
-        stat("Speed", r.rtf ? `${+r.rtf.toFixed(1)}×` : "–", "accent"), stat("Words", String(res.words)),
-        h("div.stat.wide", h("div.stat-l", "Speech recognition"), h("div.stat-v", { title: res.stt || "" }, res.stt || "–")),
-        h("div.stat.wide", h("div.stat-l", "Diarization"), h("div.stat-v", { title: res.diar || "" }, (res.diar || "–").split("/").pop())));
+        stat("Speed", r.rtf ? `${+r.rtf.toFixed(1)}×` : "–", true), stat("Words", String(res.words)));
+      const models = [res.stt, (res.diar || "").split("/").pop(), res.language && res.language !== "auto" ? res.language : null].filter(Boolean);
 
-      return h("div.dgrid", tcard,
+      return h("div.dgrid", tcol,
         h("aside.aside",
-          h("section.box.spk-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Speakers"), h("span", `${res.speakers.length}`)), h("div.spk-list", spkRows)),
-          h("section.box.stats-box", h("div.box-h", h("span", h("span.eyebrow-rule"), "Stats")), stats)));
+          h("div", sectionHeader(`Speakers · ${res.speakers.length}`), h("div.spk-card", spkRows)),
+          h("div", sectionHeader("Stats"), stats),
+          models.length ? h("div", sectionHeader("Models"), h("div.stack-tags", models.map((m) => h("span.tag", m)))) : null));
     }
 
     function progressView() {
       const r = D.row, st = r.status;
       const step = st === "queued" ? 1 : st === "processing" ? (/^preparing/.test(r.note || "") ? 2 : 3) : 3;
-      const labels = ["Uploaded", "Queued", "Preparing", "Transcribing", "Done"];
-      const curIdx = st === "failed" ? -1 : step;
-      const steps = h("div.pv-steps");
-      labels.forEach((l, i) => {
-        if (i) steps.append(h("div.pv-line", { cls: curIdx > i - 1 && i <= curIdx ? "done" : "" }));
-        const state = st === "failed" ? (i === 0 ? "done" : "") : i < curIdx ? "done" : i === curIdx ? "cur" : "";
-        steps.append(h("div.pv-step", { cls: state }, h("b", state === "done" ? icon("check") : String(i + 1)), l));
+      const labels = [["file", "Uploaded"], ["clock", "Queued"], ["wave", "Preparing"], ["gpu", "Transcribing"]];
+      const flow = h("div.flow");
+      labels.forEach(([ic, l], i) => {
+        if (i) flow.append(arrow());
+        const state = st === "failed" ? (i === 0 ? "ok" : i === step ? "bad" : "") : i < step ? "ok" : i === step ? "cur" : "";
+        const inner = state === "ok" ? icon("check") : state === "cur" && i > 1 ? h("div.spin") : icon(state === "bad" ? "alert" : ic);
+        flow.append(h("div.node", h("div.node-ico", { cls: state }, inner), h("div.node-cap", { cls: state === "bad" ? "" : state }, l)));
       });
+      flow.append(arrow(true), h("div.result.dim", "✓ Done"));
+      const card = (...kids) => h("div.bcard.pv", ...kids);
       if (st === "failed") {
-        return h("div.progress-view", h("div.pv-ico.failed", icon("alert")), h("h3", "Transcription failed"),
-          h("p", r.error || "Unknown error"), h("div", { style: { marginTop: "22px" } },
+        return card(h("div.bstamp", "Failed"), h("strong.btitle", "Transcription failed"), h("div.quote", r.error || "Unknown error"), flow,
+          h("div.bnote.row", h("span", "Nothing was lost: the audio is still stored and can be sent again."),
             h("button.btn.primary", { on: { click: () => send("retry", { id: r.id }) } }, icon("retry"), "Retry")));
       }
-      const elapsed = h("div.pv-elapsed");
+      const elapsed = h("span.tnum");
       const upd = () => (elapsed.textContent = `${clock((Date.now() - new Date(r.created_at)) / 1000)} since upload`);
       upd(); elapsedIv = setInterval(upd, 1000);
-      return h("div.progress-view",
-        h("div.pv-ico", { cls: st }, st === "queued" ? icon("clock") : h("div.spin")),
-        h("h3", st === "queued" ? "Waiting in the queue" : cap(r.note || "processing") + "…"),
-        h("p", st === "queued" ? "A worker will pick this up in a moment. This page updates by itself."
-          : "The GPU service is transcribing and working out who speaks when. The transcript appears here when it's done."),
-        steps, h("div.bar.indet.pv-bar", h("i", { style: { width: `${(step / 4) * 100}%` } })), elapsed);
+      return card(
+        h("div.bstamp", st === "queued" ? "Queued" : "Processing"),
+        h("strong.btitle", st === "queued" ? "Waiting in the queue" : cap(r.note || "processing") + "…"),
+        h("div.quote", st === "queued" ? "“A worker will pick this up in a moment.”" : "“Transcribing and working out who speaks when.”"),
+        flow, h("div.bar.indet", h("i", { style: { width: `${(step / 4) * 100}%` } })),
+        h("div.bnote.row", h("span", "This page updates by itself; the transcript appears here when it's done."), h("span.kbd-hint", elapsed)));
     }
 
     async function del() {
@@ -800,7 +871,7 @@ window.WSW = (() => {
 
     function update(p) {
       if (!D || !D.row) return;
-      if (p.result && !D.result) { const t = ws ? ws.getCurrentTime() : 0; mount(p); if (t) ws.once?.("ready", () => ws.setTime(t)); return; }
+      if (p.result && !D.result) { const t = ws ? ws.getCurrentTime() : 0; mount({ health: lastHealth, ...p }); if (t) ws.once?.("ready", () => ws.setTime(t)); return; }
       const statusChanged = p.row.status !== D.row.status || p.row.note !== D.row.note;
       D.row = { ...D.row, ...p.row };
       titleInp.setValue(D.row.name);
