@@ -1451,105 +1451,186 @@ window.WSW = (() => {
 
   // ------------------------------------------------------------ /architecture
   const Architecture = (() => {
-    // ---- the pipeline diagram (inline SVG, wide screens): gold = audio in / job out,
-    // teal = result + live event back, dashed = playback straight from MinIO
+    // ---- the pipeline diagram (inline SVG, wide screens). Two lanes: RECORD / UPLOAD on top (gold),
+    // LIVE underneath (teal); the Browser and the ui span both. Gold = audio in / job out,
+    // teal = result + live event back, dashed gold = playback straight from MinIO,
+    // dashed teal -> gold = upgrading a live recording into the RECORD path.
     const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-    function node(x, y, w, hh, stamp, name, lines, { dot = "", cls = "" } = {}) {
+    function node(x, y, w, hh, stamp, name, lines, { dot = "", cls = "", foot = "" } = {}) {
       // stamp pinned to the top; name + detail lines follow it (short boxes) or sit centred (tall ones)
       const bh = 26 + lines.length * 19, top = hh < 130 ? y + 34 : Math.max(y + 40, y + hh / 2 - bh / 2);
       return `<g class="n ${cls}"><rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="8"/>` +
         `<text class="n-stamp" x="${x + 16}" y="${y + 24}">${esc(stamp)}</text>` +
         (dot ? `<circle class="sdot ${dot}" cx="${x + w - 18}" cy="${y + 20}" r="4"/>` : "") +
         `<text class="n-name" x="${x + 16}" y="${top + 24}">${esc(name)}</text>` +
-        lines.map((l, i) => `<text class="n-line" x="${x + 16}" y="${top + 46 + i * 19}">${esc(l)}</text>`).join("") + "</g>";
+        lines.map((l, i) => `<text class="n-line" x="${x + 16}" y="${top + 46 + i * 19}">${esc(l)}</text>`).join("") +
+        (foot ? `<text class="n-foot" x="${x + 16}" y="${y + hh - 16}">${esc(foot)}</text>` : "") + "</g>";
     }
-    function arrow(x1, x2, y, label, kind) {        // horizontal; label above the middle
+    // horizontal arrow: label line(s) stack above the middle, smaller `sub` lines hang below it
+    function arrow(x1, x2, y, label, kind, sub = []) {
+      const mid = (x1 + x2) / 2, ls = [].concat(label);
       return `<g class="e ${kind}"><line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" marker-end="url(#ah-${kind})"/>` +
-        `<text class="e-label" x="${(x1 + x2) / 2}" y="${y - 9}" text-anchor="middle">${esc(label)}</text></g>`;
+        ls.map((l, i) => `<text class="e-label" x="${mid}" y="${y - 9 - (ls.length - 1 - i) * 14}" text-anchor="middle">${esc(l)}</text>`).join("") +
+        sub.map((l, i) => `<text class="e-sub" x="${mid}" y="${y + 17 + i * 13}" text-anchor="middle">${esc(l)}</text>`).join("") + "</g>";
+    }
+    // a mode lane: tinted band, accent bar, vertical name in the left gutter, stamp top right
+    function band(y1, y2, kind, title, note) {
+      return `<g class="band ${kind}"><rect class="band-bg" x="36" y="${y1}" width="1380" height="${y2 - y1}" rx="10"/>` +
+        `<line class="band-bar" x1="37" y1="${y1 + 10}" x2="37" y2="${y2 - 10}"/>` +
+        `<text class="band-v" transform="translate(20 ${(y1 + y2) / 2}) rotate(-90)" text-anchor="middle">${esc(title)}</text>` +
+        `<text class="band-t" x="1400" y="${y1 + 24}" text-anchor="end">${esc(title)}</text>` +
+        `<text class="band-n" x="1400" y="${y1 + 42}" text-anchor="end">${esc(note)}</text></g>`;
     }
     function diagram() {
-      const B = [10, 160], U = [290, 440], I = [590, 780], W = [930, 1070], G = [1200, 1370];
-      const rows = [106, 214, 322, 430];            // centre lines of MinIO, Postgres, stream, pub/sub
-      const L = [546, 590];                         // the live-captions lane, under everything else
-      const svg = `<svg class="arch-svg" viewBox="0 0 1380 640" role="img" aria-label="Two modes. RECORD or upload: browser, ui, MinIO, Postgres, Redis, worker, GPU batch ASR service. LIVE: the browser streams through the ui proxy to the GPU streaming ASR service and the ui saves the live result straight to MinIO and Postgres">
+      const B = [50, 190], U = [350, 490], I = [630, 820], W = [970, 1110], G = [1250, 1410];
+      const R = [44, 462], L = [498, 876];          // the RECORD and LIVE lanes
+      const rows = [110, 206, 302, 398];            // RECORD: MinIO, Postgres, pub/sub, stream
+      const ic = (I[0] + I[1]) / 2, bc = (B[0] + B[1]) / 2;
+      const svg = `<svg class="arch-svg" viewBox="0 0 1420 890" role="img" aria-label="Two modes. RECORD or upload lane: browser, ui, MinIO, Postgres, Redis stream, worker, GPU batch ASR on 9100. LIVE lane: the browser streams through the ui proxy to the GPU streaming ASR on 9101; on stop the ui saves the audio and the live result straight to MinIO and Postgres, no queue and no worker. A live recording can be upgraded: re-run puts it on the RECORD queue">
         <defs>
           <marker id="ah-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah gold"/></marker>
           <marker id="ah-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah teal"/></marker>
           <marker id="ah-play" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah gold"/></marker>
+          <linearGradient id="up-grad" gradientUnits="userSpaceOnUse" x1="0" y1="512" x2="0" y2="440">
+            <stop offset="0" class="stop-teal"/><stop offset="1" class="stop-gold"/></linearGradient>
         </defs>
-        <g class="e play"><path d="M${(I[0] + I[1]) / 2} 60 V30 H${(B[0] + B[1]) / 2} V163" marker-end="url(#ah-play)"/>
-          <text class="e-label" x="${(U[0] + U[1]) / 2}" y="21" text-anchor="middle">Playback · presigned GET (1 h) · streamed straight from MinIO</text></g>
-        ${node(B[0], 165, B[1] - B[0], 460, "Client", "Browser", ["LIVE | RECORD", "mic recorder", "PCM worklet", "live transcript", "waveform", "player"])}
-        ${node(U[0], 60, U[1] - U[0], 565, "Web · :8080", "ui", ["NiceGUI", "websocket push", "/ws/live proxy", "custom JS"], { dot: "live" })}
-        ${node(I[0], 60, I[1] - I[0], 92, "Object store · :9000", "MinIO", ["audio · result.json"], { cls: "infra" })}
-        ${node(I[0], 168, I[1] - I[0], 92, "Database", "Postgres", ["one row per recording"], { cls: "infra" })}
-        ${node(I[0], 276, I[1] - I[0], 92, "Redis stream", "asr-jobs", ["consumer group"], { cls: "infra" })}
-        ${node(I[0], 384, I[1] - I[0], 92, "Redis pub/sub", "events", ["recordings.events"], { cls: "infra" })}
-        ${node(W[0], 60, W[1] - W[0], 416, "Worker", "worker", ["FastStream", "2 in flight", "retries on 503"])}
-        ${node(G[0], 165, G[1] - G[0], 200, "GPU box · :9100", "Batch ASR", ["Parakeet · words", "pyannote · speakers", "2× RTX 3090"], { dot: "gpu", cls: "gpu" })}
-        ${node(G[0], 505, G[1] - G[0], 120, "GPU box · :9101", "Live ASR", ["Nemotron streaming", "4 live sessions"], { dot: "gpulive", cls: "gpu" })}
-        <text class="lane-label" x="${(I[0] + W[1]) / 2}" y="${L[0] - 36}" text-anchor="middle">LIVE mode · on stop the ui saves audio + live result, no job</text>
-        ${arrow(B[1], U[0], 240, "POST audio · RECORD", "gold")}
-        ${arrow(U[0], B[1], 290, "live status", "teal")}
+        ${band(R[0], R[1], "record", "RECORD / UPLOAD mode", "batch · after you stop")}
+        ${band(L[0], L[1], "live", "LIVE mode", "streaming · while you speak")}
+        <g class="e play"><path d="M${ic} 70 V30 H${bc} V71" marker-end="url(#ah-play)"/>
+          <text class="e-label" x="${(bc + ic) / 2}" y="21" text-anchor="middle">Playback, both modes · presigned GET (1 h) · streamed straight from MinIO</text></g>
+        ${node(B[0], 74, B[1] - B[0], 786, "Client", "Browser", ["LIVE | RECORD", "mic recorder", "PCM worklet", "live transcript", "waveform", "player"], { foot: "both modes" })}
+        ${node(U[0], 60, U[1] - U[0], 800, "Web · :8080", "ui", ["NiceGUI", "websocket push", "/ws/live proxy", "custom JS"], { dot: "live", foot: "both modes" })}
+
+        ${node(I[0], 70, I[1] - I[0], 80, "Object store · :9000", "MinIO", [], { cls: "infra" })}
+        ${node(I[0], 166, I[1] - I[0], 80, "Database", "Postgres", [], { cls: "infra" })}
+        ${node(I[0], 262, I[1] - I[0], 80, "Redis pub/sub", "events", [], { cls: "infra" })}
+        ${node(I[0], 358, I[1] - I[0], 80, "Redis stream", "asr-jobs", [], { cls: "infra" })}
+        ${node(W[0], 70, W[1] - W[0], 368, "Worker", "worker", ["FastStream", "2 in flight", "retries on 503"])}
+        ${node(G[0], 150, G[1] - G[0], 180, "GPU · :9100", "Batch ASR", ["Parakeet · words", "pyannote · speakers", "2× RTX 3090"], { dot: "gpu", cls: "gpu" })}
+        ${arrow(B[1], U[0], 150, ["POST audio", "/api/recordings"], "gold", ["num_speakers", "Auto → none · 1–4"])}
+        ${arrow(U[0], B[1], 250, "status push", "teal")}
         ${arrow(U[1], I[0], rows[0], "PUT audio", "gold")}
-        ${arrow(U[1], I[0], rows[1], "INSERT row", "gold")}
-        ${arrow(U[1], I[0], rows[2], "XADD job", "gold")}
-        ${arrow(I[0], U[1], rows[3], "event", "teal")}
+        ${arrow(U[1], I[0], rows[1], "INSERT · queued", "gold")}
+        ${arrow(I[0], U[1], rows[2], "event", "teal")}
+        ${arrow(U[1], I[0], rows[3], "XADD job", "gold")}
         ${arrow(W[0], I[1], rows[0], "result.json", "teal")}
         ${arrow(W[0], I[1], rows[1], "stats · done", "teal")}
-        ${arrow(I[1], W[0], rows[2], "XREADGROUP", "gold")}
-        ${arrow(W[0], I[1], rows[3], "PUBLISH done", "teal")}
-        ${arrow(W[1], G[0], 240, "/v1/transcribe", "gold")}
-        ${arrow(G[0], W[1], 290, "words + who", "teal")}
-        ${arrow(B[1], U[0], L[0], "PCM /ws/live", "gold")}
-        ${arrow(U[0], B[1], L[1], "transcript", "teal")}
-        ${arrow(U[1], G[0], L[0], "/v1/stream · 16 kHz PCM · bearer token added server side", "gold")}
-        ${arrow(G[0], U[1], L[1], "{from, segments} updates · words ~0.2 s after they are spoken", "teal")}
+        ${arrow(W[0], I[1], rows[2], "PUBLISH done", "teal")}
+        ${arrow(I[1], W[0], rows[3], "XREADGROUP", "gold")}
+        ${arrow(W[1], G[0], 216, "/v1/transcribe", "gold", ["num_speakers if set"])}
+        ${arrow(G[0], W[1], 276, "words + who", "teal")}
+
+        <g class="e up"><path d="M${ic} 512 V440" marker-end="url(#ah-gold)"/>
+          <text class="up-label" x="${ic + 14}" y="477">Upgrade · re-run</text>
+          <text class="e-sub" x="${ic + 14}" y="492">row → queued, source → batch · then worker → :9100 → word timings</text></g>
+
+        ${node(I[0], 512, I[1] - I[0], 80, "Same table", "Postgres", [], { cls: "infra live" })}
+        ${node(I[0], 608, I[1] - I[0], 80, "Same bucket", "MinIO", [], { cls: "infra live" })}
+        <g class="ghost"><rect x="${W[0]}" y="528" width="${W[1] - W[0]}" height="144" rx="8"/>
+          <text class="n-stamp" x="${W[0] + 16}" y="552">No job</text>
+          <text class="n-line" x="${W[0] + 16}" y="590">no queue</text>
+          <text class="n-line" x="${W[0] + 16}" y="611">no worker</text>
+          <text class="n-line" x="${W[0] + 16}" y="632">saved as</text>
+          <text class="n-line" x="${W[0] + 16}" y="653">it was heard</text></g>
+        ${arrow(B[1], U[0], 600, ["② on stop · POST", "/api/recordings/live"], "gold", ["audio + final segments"])}
+        ${arrow(U[1], I[0], 552, ["INSERT · done", "source = live"], "gold")}
+        ${arrow(U[1], I[0], 648, ["PUT audio", "+ result.json"], "gold")}
+
+        ${node(G[0], 716, G[1] - G[0], 144, "GPU · :9101", "Live ASR", ["Nemotron streaming", "ASR + diarization", "4 live sessions"], { dot: "gpulive", cls: "gpu" })}
+        ${arrow(B[1], U[0], 764, "① PCM /ws/live", "gold", ["start: max_speakers", "Auto → 4 · 1–4"])}
+        ${arrow(U[0], B[1], 836, "transcript", "teal")}
+        ${arrow(U[1], G[0], 764, "/v1/stream · 16 kHz PCM · bearer token added server side", "gold", ["start message passed on · max_speakers clamped to 1–4"])}
+        ${arrow(G[0], U[1], 836, "{from, segments} updates · words ~0.2 s after they are spoken", "teal")}
       </svg>`;
       const box = h("div.arch-diagram");
       box.innerHTML = svg;
       return box;
     }
 
-    // ---- the same flow as a vertical list (narrow screens)
+    // ---- the same two lanes as a vertical list (narrow screens)
     function flow() {
       const n = (stamp, name, sub, dot) => h("div.fl-node", h("div.fl-stamp", stamp, dot ? h("span.sdot-h", { cls: dot }) : null), h("div.fl-name", name), sub ? h("div.fl-sub", sub) : null);
-      const e = (kind, label) => h("div.fl-edge", { cls: kind }, h("span.fl-arr", "↓"), h("span", label));
+      const e = (kind, label, arr = "↓") => h("div.fl-edge", { cls: kind }, h("span.fl-arr", arr), h("span", label));
+      const lane = (kind, title, note, ...kids) => h("div.fl-mode", { cls: kind },
+        h("div.fl-mode-head", h("span.stamp.src", { cls: kind === "live" ? "live" : "batch" }, title), h("span.fl-mode-note", note)), ...kids);
       return h("div.arch-flow",
-        h("div.fl-lane.first", h("span.split-label", "RECORD mode · uploads")),
-        n("Client", "Browser", "mic recorder · waveform · player"),
-        e("gold", "POST audio"),
-        n("Web · :8080", "ui", "NiceGUI + websocket push", "live"),
-        e("gold", "PUT audio · INSERT row (queued) · XADD job"),
-        h("div.fl-trio", n("Object store", "MinIO"), n("Database", "Postgres"), n("Redis stream", "asr-jobs")),
-        e("gold", "XREADGROUP · 2 in flight"),
-        n("Worker", "worker", "FastStream · retries on 503"),
-        e("gold", "POST /v1/transcribe"),
-        n("GPU box · :9100", "Batch ASR", "Parakeet words + pyannote speakers · 2× RTX 3090", "gpu"),
-        e("teal", "words + who spoke, back to the worker"),
-        h("div.fl-trio", n("MinIO", "result.json"), n("Postgres", "stats · done"), n("Redis pub/sub", "PUBLISH")),
-        e("teal", "event → ui → websocket"),
-        n("Client", "Browser", "live status · playback via presigned GET from MinIO"),
-        h("div.fl-lane", h("span.split-label", "LIVE mode")),
-        n("Client", "Browser", "the mic as 16 kHz PCM from an AudioWorklet"),
-        e("gold", "/ws/live"),
-        n("Web · :8080", "ui proxy", "adds the bearer token server side"),
-        e("gold", "/v1/stream · PCM"),
-        n("GPU box · :9101", "Live ASR", "Nemotron streaming ASR + diarization · 4 live sessions", "gpulive"),
-        e("teal", "the transcript back over both WebSockets, ~0.2 s behind the voice"),
-        n("Client", "Browser", "live transcript view; on stop: POST audio + final segments"),
-        e("gold", "/api/recordings/live · no job"),
-        h("div.fl-trio", n("MinIO", "audio + result"), n("Postgres", "done · live"), n("Later", "upgrade", "batch path")));
+        h("div.fl-both", "Browser + ui serve both modes · playback: presigned GET straight from MinIO"),
+        lane("record", "RECORD / UPLOAD mode", "batch · after you stop",
+          n("Client", "Browser", "mic recorder · upload · waveform · player"),
+          e("gold", "POST /api/recordings · num_speakers: Auto → none, 1–4"),
+          n("Web · :8080", "ui", "NiceGUI + websocket push", "live"),
+          e("gold", "PUT audio · INSERT row (queued) · XADD job"),
+          h("div.fl-trio", n("Object store", "MinIO"), n("Database", "Postgres"), n("Redis stream", "asr-jobs")),
+          e("gold", "XREADGROUP · 2 in flight"),
+          n("Worker", "worker", "FastStream · retries on 503"),
+          e("gold", "POST /v1/transcribe · num_speakers if set"),
+          n("GPU · :9100", "Batch ASR", "Parakeet words + pyannote speakers · 2× RTX 3090", "gpu"),
+          e("teal", "words + who spoke, back to the worker"),
+          h("div.fl-trio", n("MinIO", "result.json"), n("Postgres", "stats · done"), n("Redis pub/sub", "PUBLISH")),
+          e("teal", "event → ui → websocket"),
+          n("Client", "Browser", "status updates on every open page")),
+        lane("live", "LIVE mode", "streaming · while you speak",
+          n("Client", "Browser", "the mic as 16 kHz PCM from an AudioWorklet"),
+          e("gold", "① /ws/live · start: max_speakers (Auto → 4, 1–4)"),
+          n("Web · :8080", "ui proxy", "adds the bearer token server side"),
+          e("gold", "/v1/stream · 16 kHz PCM"),
+          n("GPU box · :9101", "Live ASR", "Nemotron streaming ASR + diarization · 4 live sessions", "gpulive"),
+          e("teal", "the transcript back over both WebSockets, words ~0.2 s after they are spoken"),
+          n("Client", "Browser", "live transcript view"),
+          e("gold", "② on stop: POST /api/recordings/live · audio + final segments"),
+          n("Web · :8080", "ui", "no queue, no worker, no second pass"),
+          e("gold", "PUT audio + result.json · INSERT row done, source = live"),
+          h("div.fl-duo", n("Same bucket", "MinIO"), n("Same table", "Postgres"))),
+        h("div.fl-upgrade", h("span.fl-arr", "↑"), h("span",
+          h("b", "Upgrade · re-run"), " a live recording any time: row → queued, source → batch, XADD onto asr-jobs, then the RECORD path above: worker → :9100 → word timings.")));
     }
 
-    const STEPS = [
-      ["Pick a mode", "LIVE shows the transcript while you speak and saves it as is. RECORD (and every upload) gets the accurate batch transcript after you stop. The choice is remembered in the browser.", ["LIVE | RECORD", "MediaRecorder", "Upload"]],
-      ["LIVE: stream", "An AudioWorklet taps the mic at 16 kHz; the PCM goes over /ws/live to the ui, which adds the token and relays it to the streaming service on :9101. Speaker-coloured turns come back as the words are spoken and are revised in place.", ["/ws/live proxy", "Nemotron streaming", ":9101"]],
-      ["LIVE: save", "On stop the browser POSTs the recording and the service's final segments in one request. The ui writes the audio and result.json to MinIO, then inserts the row already done (source live). No job, no second pass.", ["POST /api/recordings/live", "MinIO", "source = live"]],
-      ["RECORD / upload: queue", "The file is POSTed and streamed into MinIO; the ui inserts a Postgres row with status queued and adds a job to the asr-jobs Redis stream. A worker claims it with a conditional UPDATE.", ["POST /api/recordings", "XADD", "Consumer group"]],
-      ["Batch transcribe", "The worker sends the whole file to the GPU box on :9100. Parakeet writes the words with timestamps, pyannote works out who spoke when. A live recording can be upgraded the same way (re-run): it then becomes a batch one, with word timings.", ["Parakeet", "pyannote", ":9100"]],
-      ["Save + live update", "result.json goes to MinIO and the numbers to Postgres, status done. A PUBLISH on Redis pub/sub reaches the ui, which pushes it to every open page; the player streams the audio from MinIO via a presigned URL.", ["MinIO", "Redis pub/sub", "presigned URL"]],
+    // ---- LIVE vs RECORD, side by side
+    const COMPARE = [
+      ["Models", "Nemotron 3.5 ASR streaming 0.6B + Nemotron 3 Diarization", "Parakeet TDT 0.6B v3 + pyannote community-1"],
+      ["When text appears", "While you speak: words ~0.2 s after they are spoken (p50; 0.55 s p95)", "Seconds after you stop: ~40× real time on the GPU"],
+      ["Speaker labels", "Live, and may be revised as it hears more; up to 4 speakers", "Clustered over the whole recording; Auto or 1–4"],
+      ["Speakers setting", "max_speakers in the start message: Auto → 4, or 1–4", "num_speakers on the POST: Auto → none (the model decides), or 1–4"],
+      ["Timings", "Per segment", "Per word"],
+      ["Path", "WebSocket /ws/live → ui proxy → :9101; saved on stop, no queue", "MinIO → Redis Stream → worker → :9100"],
+      ["Accuracy", "Good", "Best"],
+      ["If it fails", "Live unavailable → the recording is uploaded after stop and gets the batch transcript", "503 busy → retried up to 3×, waiting the service's Retry-After"],
+      ["Upgrade", "→ batch any time (Upgrade / Re-run on the recording's page)", "— (already the accurate one; Re-run changes the speaker count)"],
     ];
+    function compare() {
+      const head = h("div.cmp-row.cmp-head", h("div.cmp-k"),
+        h("div.cmp-v.live", h("span.stamp.src.live", "LIVE mode")),
+        h("div.cmp-v.batch", h("span.stamp.src.batch", "RECORD / UPLOAD mode")));
+      return h("div.cmp", head, COMPARE.map(([k, a, b]) => h("div.cmp-row",
+        h("div.cmp-k", k),
+        h("div.cmp-v.live", h("span.cmp-m", "LIVE"), a),
+        h("div.cmp-v.batch", h("span.cmp-m", "RECORD"), b))));
+    }
+
+    // ---- how a recording moves: one column per mode
+    const STEPS = {
+      live: [
+        ["Stream", "An AudioWorklet taps the mic at 16 kHz; the PCM goes over /ws/live to the ui, which adds the token and relays it to the streaming service on :9101 with max_speakers (Auto → 4). Speaker-coloured turns come back as the words are spoken and are revised in place.", ["/ws/live proxy", "Nemotron streaming", ":9101"]],
+        ["Save on stop", "The browser POSTs the recording and the service's final segments in one request. The ui writes the audio and result.json to MinIO, then inserts the row already done (source live). No job, no worker, no second pass.", ["POST /api/recordings/live", "MinIO", "source = live"]],
+        ["Upgrade, any time", "Upgrade (re-run) on the recording's page puts the row back to queued with source batch and adds a job: from there it takes the RECORD path and comes back with word timings.", ["store.rerun", "XADD", "source → batch"]],
+      ],
+      batch: [
+        ["Queue", "The file is POSTed with num_speakers (Auto → none) and streamed into MinIO; the ui inserts a Postgres row with status queued and adds a job to the asr-jobs Redis stream. A worker claims it with a conditional UPDATE.", ["POST /api/recordings", "XADD", "Consumer group"]],
+        ["Batch transcribe", "The worker sends the whole file to the GPU box on :9100. Parakeet writes the words with timestamps, pyannote works out who spoke when over the whole recording. A busy service (503) is retried.", ["Parakeet", "pyannote", ":9100"]],
+        ["Save + live update", "result.json goes to MinIO and the numbers to Postgres, status done. A PUBLISH on Redis pub/sub reaches the ui, which pushes it to every open page; the player streams the audio from MinIO via a presigned URL.", ["MinIO", "Redis pub/sub", "presigned URL"]],
+      ],
+    };
+    function steps() {
+      const col = (kind, title, note, list) => h("div.steps-col", { cls: kind },
+        h("div.steps-col-head", h("span.stamp.src", { cls: kind }, title), h("span.fl-mode-note", note)),
+        h("ol.steps-list", list.map(([t, d, tags], i) => h("li.step-card",
+          h("div.step-n", String(i + 1).padStart(2, "0")), h("div",
+            h("h3.step-t", t), h("p.step-d", d), h("div.stack-tags", tags.map((x) => h("span.tag", x))))))));
+      return h("div", h("p.steps-intro", "Pick LIVE or RECORD on the recorder (the choice is remembered in the browser). Uploads always take the RECORD path."),
+        h("div.steps-cols",
+          col("live", "LIVE mode", "the transcript while you speak", STEPS.live),
+          col("batch", "RECORD / UPLOAD mode", "the accurate transcript after you stop", STEPS.batch)));
+    }
 
     const SERVICES = [
       ["Frontend · ui", "Who said what", "The pages you are looking at. NiceGUI serves them and pushes every status change over its websocket; the recorder, the drop zone and the player are plain JavaScript.",
@@ -1589,11 +1670,9 @@ window.WSW = (() => {
 
       const legend = h("div.legend",
         h("span", h("i.lg.gold"), "Audio in, job out"), h("span", h("i.lg.teal"), "Result + live event back"),
-        h("span", h("i.lg.lg-play"), "Playback"), h("span", h("i.lg-dot"), "Live status"));
-
-      const steps = h("ol.steps-grid", STEPS.map(([t, d, tags], i) => h("li.step-card",
-        h("div.step-n", String(i + 1).padStart(2, "0")), h("div",
-          h("h3.step-t", t), h("p.step-d", d), h("div.stack-tags", tags.map((x) => h("span.tag", x)))))));
+        h("span", h("i.lg.lg-play"), "Playback"), h("span", h("i.lg.lg-up"), "Upgrade · re-run"),
+        h("span", h("i.lg-band.record"), "RECORD / upload lane"), h("span", h("i.lg-band.live"), "LIVE lane"),
+        h("span", h("i.lg-dot"), "Live status"));
 
       const services = h("div.arch-grid", SERVICES.map(([stamp, name, desc, tags]) => h("div.arch-card",
         h("div.stamp", stamp), h("h3.arch-name", name), h("p.arch-desc", desc), h("div.stack-tags", tags.map((t) => h("span.tag", t))))));
@@ -1610,9 +1689,10 @@ window.WSW = (() => {
         h("section.page", pageHead("System", "Architecture",
           "Two ways from your microphone to a transcript: LIVE streams to one GPU service and is saved as it was heard; RECORD and uploads take the queue to the batch pass. And how every open page hears about it the moment it is done.")),
         h("section.arch-sec.first", h("div.panel.diagram-panel", h("div.stamp", "Pipeline"), diagram(), flow(), legend)),
-        h("section.arch-sec", secHead("01 · Flow", "How a recording moves"), steps),
-        h("section.arch-sec", secHead("02 · Services", "What runs"), services),
-        h("section.arch-sec", secHead("03 · Deployment", "Where it runs"), where,
+        h("section.arch-sec", secHead("01 · Modes", "LIVE vs RECORD"), compare()),
+        h("section.arch-sec", secHead("02 · Flow", "How a recording moves"), steps()),
+        h("section.arch-sec", secHead("03 · Services", "What runs"), services),
+        h("section.arch-sec", secHead("04 · Deployment", "Where it runs"), where,
           h("div.note", h("div.split-label", "Playback"),
             h("p", "The browser streams the audio straight from MinIO through a presigned URL that is valid for one hour, so audio never passes through the ui. wavesurfer.js decodes the whole file to draw the speaker-coloured waveform, which is fine at demo lengths."))));
     }
