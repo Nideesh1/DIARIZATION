@@ -537,9 +537,19 @@ window.WSW = (() => {
 
     function bullets(m) {
       if (m.status === "done") {
-        const n = m.speakers || 0;
-        return [h("li", n ? h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))) : null,
-                  n ? plural(n, "speaker") : "No speech found"),
+        const st = Array.isArray(m.speaker_stats) && m.speaker_stats.length ? m.speaker_stats : null;
+        const n = st ? st.length : m.speakers || 0;
+        let label = n ? plural(n, "speaker") : "No speech found", tip = null;
+        if (st) {
+          // same share as the detail page's Speakers card: talk / total, rounded per speaker
+          const total = st.reduce((a, s) => a + s.seconds, 0) || 1;
+          const pct = st.map((s) => Math.round((s.seconds / total) * 100));
+          label += ` · ${pct.slice(0, 4).map((p) => `${p}%`).join(" / ")}${n > 4 ? ` +${n - 4}` : ""}`;
+          const names = m.speaker_names || {};
+          tip = st.map((s, i) => `${names[s.speaker] || `Speaker ${i + 1}`} ${pct[i]}%`).join(" · ");
+        }
+        return [h("li", { title: tip }, n ? h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))) : null,
+                  label),
                 speed(m.rtf) ? h("li", speed(m.rtf)) : null,
                 m.words != null ? h("li", plural(m.words, "word")) : null];
       }

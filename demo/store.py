@@ -134,6 +134,42 @@ async def delete(rid: str) -> None:
     await delete_objects(rid)
 
 
+async def backfill_speaker_stats(limit: int = 50) -> list[str]:
+    """Done rows from before speaker_stats existed: compute it once from their result.json.
+    Bounded and safe to re-run (only rows still NULL are touched)."""
+    done = []
+    for r in await db.fetch("SELECT id, result_key FROM recordings WHERE status = 'done' AND speaker_stats IS NULL "
+                            "AND result_key IS NOT NULL ORDER BY created_at DESC LIMIT $1", limit):
+        try:
+            stats = speaker_stats(json.loads(await get_bytes(r["result_key"])))
+        except Exception:  # noqa: BLE001 -- a missing/corrupt result just keeps the old card line
+            continue
+        if await db.execute("UPDATE recordings SET speaker_stats = $2 WHERE id = $1 AND speaker_stats IS NULL",
+                            r["id"], stats) == "UPDATE 1":
+            done.append(r["id"])
+    return done
+
+
+# ------------------------------------------------------------------ talk time
+def speaker_stats(res: dict) -> list[dict]:
+    """Talk time per speaker from an ASR response, in order of first appearance (pyannote's labels
+    are not in that order). Seconds are summed segment lengths; without segments, word lengths.
+    Speakers the service lists but who never appear come last with 0. The detail page and the
+    library cards both use this, so their shares agree."""
+    spans = res.get("segments") or res.get("words") or []
+    first, talk = {}, {}
+    for g in spans:
+        s = g.get("speaker")
+        if s is None:
+            continue
+        first.setdefault(s, g.get("start", 0))
+        talk[s] = talk.get(s, 0) + max(0.0, g.get("end", 0) - g.get("start", 0))
+    labels = sorted(set(res.get("speakers") or []) | set(first), key=lambda s: first.get(s, float("inf")))
+    total = sum(talk.values())
+    return [{"speaker": s, "seconds": round(talk.get(s, 0), 2),
+             "share": round(talk.get(s, 0) / total, 4) if total else 0} for s in labels]
+
+
 # ------------------------------------------------------------------ MinIO (S3 API)
 async def put_stream(key: str, chunks: AsyncIterator[bytes], content_type: str) -> int:
     """Stream an upload into MinIO without holding it in memory: small bodies go up in one

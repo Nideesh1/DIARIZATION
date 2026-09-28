@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS recordings (
     words             int,
     stt_model         text,
     diar_model        text,
-    speaker_names     jsonb       NOT NULL DEFAULT '{}'
+    speaker_names     jsonb       NOT NULL DEFAULT '{}',
+    speaker_stats     jsonb                      -- [{speaker, seconds, share}] in order of first appearance
 );
+-- columns added after the first release (CREATE TABLE IF NOT EXISTS leaves an existing table alone)
+ALTER TABLE recordings ADD COLUMN IF NOT EXISTS speaker_stats jsonb;
 CREATE INDEX IF NOT EXISTS recordings_created_at ON recordings (created_at DESC);

@@ -81,6 +81,7 @@ async def run_job(m: dict) -> dict:
     return dict(status="done", note=None, result_key=result_key, duration_s=d,
                 processing_s=round(took, 2), rtf=round(d / took, 1) if took else None,
                 speakers=len(res.get("speakers") or []), words=len(res.get("words") or []),
+                speaker_stats=store.speaker_stats(res),
                 stt_model=model.get("stt"), diar_model=model.get("diarization"))
 
 

@@ -107,6 +107,13 @@ async def startup() -> None:
     await store.connect()
     await store.broker.start()
     background_tasks.create(health_loop(), name="health")
+    background_tasks.create(backfill(), name="backfill")
+
+
+async def backfill() -> None:
+    """Rows finished before speaker_stats existed get their talk-time split once."""
+    for rid in await store.backfill_speaker_stats():
+        await store.announce(rid, "updated")
 
 
 async def shutdown() -> None:
@@ -129,7 +136,7 @@ ui.add_head_html(
     '<script src="/static/demo.js"></script>', shared=True)
 
 ROW_FIELDS = ("id", "name", "status", "note", "error", "duration_s", "processing_s", "rtf", "speakers",
-              "words", "stt_model", "diar_model", "num_speakers_hint")
+              "words", "stt_model", "diar_model", "num_speakers_hint", "speaker_stats", "speaker_names")
 
 
 def row_json(m: dict) -> dict:
@@ -209,14 +216,8 @@ def build_result(m: dict, res: dict) -> dict:
     labels are not, and "Speaker 2" opening the recording reads wrong), their talk time, and
     speaker turns (consecutive segments of one speaker) whose words carry [start, end]."""
     segs, words = res.get("segments") or [], res.get("words") or []
-    first, talk = {}, {}
-    for seg in segs:
-        s = seg.get("speaker")
-        first.setdefault(s, seg.get("start", 0))
-        talk[s] = talk.get(s, 0) + max(0.0, seg.get("end", 0) - seg.get("start", 0))
-    labels = sorted(set(res.get("speakers") or []) | set(first), key=lambda s: first.get(s, float("inf")))
-    speakers = [{"id": s, "name": m["speaker_names"].get(s) or f"Speaker {i + 1}", "talk": round(talk.get(s, 0), 2)}
-                for i, s in enumerate(labels)]
+    speakers = [{"id": x["speaker"], "name": m["speaker_names"].get(x["speaker"]) or f"Speaker {i + 1}",
+                 "talk": x["seconds"]} for i, x in enumerate(store.speaker_stats(res))]
     turns, wi = [], 0
     for n, seg in enumerate(segs):
         mine = []
