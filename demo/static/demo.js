@@ -166,24 +166,26 @@ window.WSW = (() => {
 
   // ------------------------------------------------------------ shell
   // every page: top bar (brand, nav, ASR health), an optional config banner, main, footer
-  let healthEl, bannerEl, navCountEl, lastHealth = null;
+  let healthEl, liveEl, bannerEl, navCountEl, lastHealth = null;
   const healthHooks = [];        // extra places that show the ASR state (the architecture page)
   const NAV = [["home", "/", "New recording", "New"], ["recordings", "/recordings", "Recordings", "Recordings"],
                ["architecture", "/architecture", "Architecture", "Architecture"]];
   function shell(active) {
     const root = document.getElementById("wsw");
     root.replaceChildren();
-    healthEl = h("div.health", { title: "GPU transcription service" }, h("span.dot"), h("span", "Checking…"));
+    const pill = (name) => h("div.health", h("span.dot"), h("span", name), h("span.h-state", " …"));
+    healthEl = pill("Batch");
+    liveEl = pill("Live");
     navCountEl = h("span.nav-count.tnum", String(navCount));
     const nav = h("nav.nav", { "aria-label": "Pages" }, NAV.map(([key, href, label, short]) =>
       h("a.nav-link", { href, cls: key === active ? "on" : "", "aria-current": key === active ? "page" : null },
         h("span.nav-full", label), h("span.nav-short", short), key === "recordings" ? navCountEl : null)));
     root.append(h("div.top-seam"), h("header.topbar",
       h("a.brand", { href: "/" }, h("img", { src: "/static/favicon.svg", alt: "" }), h("span", "Who said what")),
-      nav, h("div.spacer"), healthEl));
+      nav, h("div.spacer"), h("div.healths", healthEl, liveEl)));
     bannerEl = root.appendChild(h("div", { hidden: true }));
     const main = root.appendChild(h("main.wrap"));
-    root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization")));
+    root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization · Nemotron live captions")));
     if (lastHealth) health(lastHealth);     // a re-mount (detail page: progress <-> result) keeps the known state
     return main;
   }
@@ -193,9 +195,15 @@ window.WSW = (() => {
   function health(v) {
     lastHealth = v;
     if (!healthEl) return;
-    healthEl.className = "health " + (v.ok ? "ok" : v.ok === false ? "bad" : "");
-    healthEl.lastChild.textContent = v.ok ? "ASR online" : v.ok === false ? `ASR ${v.text}` : "Checking…";
-    healthEl.title = `ASR service: ${v.text}`;
+    // two pills: the batch service (the transcript) and the streaming one (live captions)
+    const paint = (el, x, what) => {
+      x = x || { ok: null, text: "checking" };
+      el.className = "health " + (x.ok ? "ok" : x.ok === false ? "bad" : "");
+      el.lastChild.textContent = x.ok ? " online" : x.ok === false ? (/not set/.test(x.text) ? " off" : ` ${String(x.text).split(" (")[0]}`) : " …";
+      el.title = `${what}: ${x.text}`;
+    };
+    paint(healthEl, v, "Batch transcription service (:9100)");
+    paint(liveEl, v.live, "Live captions service (:9101)");
     bannerEl.hidden = v.configured !== false;
     bannerEl.className = "banner";
     bannerEl.textContent = "ASR_URL / ASR_TOKEN are not set: recordings are saved but cannot be transcribed. Set them in demo/.env and restart.";
@@ -271,6 +279,170 @@ window.WSW = (() => {
       return h("div.field-label", "Speakers", seg);
     }
 
+    // ---- live captions while recording (the hybrid: captions now, the accurate transcript after)
+    // The same mic stream feeds an AudioWorklet (static/pcm-worklet.js) that emits 16 kHz Int16
+    // PCM in ~80 ms batches; they go up /ws/live, a proxy in the ui that adds the token and talks
+    // to the streaming ASR service. Updates come back as {from, segments}: segments at `from`
+    // and after were revised, the last one grows word by word. Nothing here can stop a
+    // recording: any failure just shows a notice, and MediaRecorder carries on as before.
+    const Live = (() => {
+      const SR = 16000, MAX_QUEUE = 100, MAX_BUFFERED = 512 * 1024, READY_TIMEOUT = 8000;
+      let box, lines, pill, ws = null, node = null, sink = null, queue = [], segs = [], els = [];
+      let captured = 0, lags = [], sid = 0, stopping = false, failed = false, hideT = 0, readyT = 0;
+
+      function el() {
+        pill = h("span.pill.live-pill", "Live");
+        lines = h("div.cap-lines", { "aria-live": "polite" });
+        box = h("div.captions", { hidden: true }, h("div.cap-head", h("div.stamp", "Live captions"), pill), lines);
+        return box;
+      }
+      const setPill = (kind, text) => { pill.className = `pill live-pill ${kind}`; pill.textContent = text; };
+      const placeholder = (text) => lines.replaceChildren(h("div.cap-wait", text));
+
+      function teardown() {
+        clearTimeout(readyT);
+        if (node) { try { node.port.onmessage = null; node.disconnect(); } catch { /* ctx closed */ } }
+        if (sink) { try { sink.disconnect(); } catch { /* ctx closed */ } }
+        node = sink = null; queue = [];
+        if (ws) { ws.onclose = ws.onmessage = null; if (ws.readyState <= 1) ws.close(); ws = null; }
+      }
+
+      function unavailable(my) {
+        if (my !== sid || failed) return;
+        failed = true;
+        teardown();
+        setPill("off", "Live · off");
+        if (!segs.length) placeholder("Live captions unavailable: the full transcript will still be generated.");
+        toast("Live captions unavailable: the full transcript will still be generated", "err");
+      }
+
+      async function tap(ctx, src, my) {
+        try {
+          await ctx.audioWorklet.addModule(window.WSW_WORKLET || "/static/pcm-worklet.js");
+          if (my !== sid || failed || stopping) return;
+          node = new AudioWorkletNode(ctx, "pcm-tap");
+          sink = ctx.createGain(); sink.gain.value = 0;     // keeps the node pulled, plays nothing
+          node.port.onmessage = (e) => {
+            captured += e.data.byteLength / 2;
+            if (ws && ws.readyState === 1 && !queue) {
+              if (ws.bufferedAmount > MAX_BUFFERED) return unavailable(my);   // stuck: give up, don't pile up
+              ws.send(e.data);
+            } else if (queue) {
+              queue.push(e.data);                           // before "ready": keep the first words
+              if (queue.length > MAX_QUEUE) queue.shift();
+            }
+          };
+          src.connect(node); node.connect(sink); sink.connect(ctx.destination);
+        } catch {
+          if (!stopping) unavailable(my);
+        }
+      }
+
+      function start(ctx, src, speakers) {
+        teardown();
+        clearTimeout(hideT);
+        const my = ++sid;
+        stopping = failed = false; segs = []; els = []; captured = 0; lags = []; queue = [];
+        box.hidden = false; box.classList.remove("out");
+        setPill("wait", "Live · connecting");
+        placeholder("Listening…");
+        tap(ctx, src, my);
+        try {
+          ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live`);
+        } catch { return unavailable(my); }
+        ws.binaryType = "arraybuffer";
+        readyT = setTimeout(() => unavailable(my), READY_TIMEOUT);
+        ws.onopen = () => ws.send(JSON.stringify({ type: "start", sample_rate: SR, encoding: "pcm_s16le",
+          language: "auto", max_speakers: speakers ? +speakers : 4 }));
+        ws.onmessage = (ev) => {
+          if (my !== sid) return;
+          let m;
+          try { m = JSON.parse(ev.data); } catch { return; }
+          if (m.type === "ready") {
+            clearTimeout(readyT);
+            if (!stopping) setPill("on", "Live");
+            const q = queue; queue = null;
+            for (const b of q || []) ws.send(b);
+          } else if (m.type === "update") {
+            apply(m.from, m.segments);
+            measure(m.segments);
+          } else if (m.type === "final") {
+            apply(0, m.segments);
+            setPill("final", "Final");
+            if (!segs.length) placeholder("No speech heard.");
+          } else if (m.type === "error" && !stopping) {
+            unavailable(my);
+          }
+        };
+        ws.onclose = () => {
+          if (my !== sid) return;
+          if (!stopping) unavailable(my);
+          else if (!failed && pill.classList.contains("wait")) setPill("final", "Final");
+        };
+      }
+
+      // segs = segs[:from] + segments; patch only the lines that changed
+      function apply(from, list) {
+        const stick = lines.scrollHeight - lines.scrollTop - lines.clientHeight < 48;
+        if (!segs.length && list.length) lines.replaceChildren();
+        segs = segs.slice(0, from).concat(list);
+        for (let i = Math.min(from, els.length); i < segs.length; i++) {
+          const g = segs[i], c = PALETTE[g.speaker % PALETTE.length];
+          let e = els[i];
+          if (!e) { e = els[i] = h("div.cap-line", h("span.cap-spk"), h("span.cap-text")); lines.append(e); }
+          e.style.setProperty("--c", c);
+          e.classList.toggle("cont", i > 0 && segs[i - 1].speaker === g.speaker);
+          if (e.firstChild.textContent !== `Speaker ${g.speaker + 1}`) e.firstChild.textContent = `Speaker ${g.speaker + 1}`;
+          if (e.lastChild.textContent !== g.text) e.lastChild.textContent = g.text;
+        }
+        while (els.length > segs.length) els.pop().remove();
+        els.forEach((e, i) => e.classList.toggle("growing", i === els.length - 1 && !stopping));
+        if (stick) lines.scrollTop = lines.scrollHeight;
+      }
+
+      // word latency, as the service's test client measures it: audio captured so far minus the
+      // end of the newest segment when an update arrives (median of the last few)
+      function measure(list) {
+        if (!list.length || stopping) return;
+        const lag = captured / SR - Math.max(...list.map((g) => g.end));
+        if (lag < -0.5 || lag > 30) return;
+        lags.push(Math.max(0, lag));
+        const w = lags.slice(-8).sort((a, b) => a - b), med = w[w.length >> 1];
+        setPill("on", `Live · ${med.toFixed(1)} s`);
+      }
+
+      function stop() {
+        const my = sid;
+        stopping = true;
+        clearTimeout(readyT);
+        els.forEach((e) => e.classList.remove("growing"));
+        if (failed || !ws) return;
+        if (queue) { teardown(); box.hidden = true; return; }   // never got going: nothing to show
+        if (node) node.port.postMessage("flush");
+        setPill("wait", "Finishing");
+        setTimeout(() => {                                     // after the last batch went out
+          if (my !== sid || !ws) return;
+          if (ws.readyState === 1) ws.send(JSON.stringify({ type: "stop" }));
+          if (node) { try { node.disconnect(); } catch { /* ctx closed */ } }
+          const sock = ws;
+          setTimeout(() => { if (sock.readyState <= 1) sock.close(); }, 5000);
+        }, 150);
+      }
+
+      // after the upload: leave the final captions up for a moment, then fold the panel away
+      function done() {
+        clearTimeout(hideT);
+        const my = sid;
+        hideT = setTimeout(() => {
+          if (my !== sid || !stopping) return;
+          box.classList.add("out");
+          setTimeout(() => { if (my === sid && stopping) { box.hidden = true; teardown(); } }, 300);
+        }, segs.length ? 10000 : 4000);
+      }
+
+      return { el, start, stop, done, stats: () => ({ lags: lags.slice(), segments: segs.slice(), failed }) };
+    })();
+
     // ---- recorder
     const Recorder = (() => {
       let panel, btn, timeEl, hintEl, canvas, rec = null, stream = null, ctx = null, an = null, raf = 0, t0 = 0, chunks = [], mime = "", state = "idle";
@@ -287,6 +459,7 @@ window.WSW = (() => {
           h("div.stamp", "01 · Microphone"),
           h("div.rec-main", btn, h("div.rec-info", timeEl, hintEl)),
           canvas,
+          Live.el(),
           h("div.rec-foot", speakersControl(), h("span.field-label.kbd-hint", "Space to start / stop")));
         requestAnimationFrame(draw);
         addEventListener("resize", () => draw());
@@ -352,12 +525,17 @@ window.WSW = (() => {
           chunks = [];
           rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
           rec.start(1000);   // 1 s timeslices: nothing lost on stop
-          ctx = new AudioContext();
+          // one 16 kHz context for the level meter and the live-captions tap (the browser
+          // resamples the mic); Firefox can't mix rates, so it gets the native rate instead
+          let src;
+          try { ctx = new AudioContext({ sampleRate: 16000 }); src = ctx.createMediaStreamSource(stream); }
+          catch { if (ctx) ctx.close(); ctx = new AudioContext(); src = ctx.createMediaStreamSource(stream); }
           an = ctx.createAnalyser(); an.fftSize = 1024;
-          ctx.createMediaStreamSource(stream).connect(an);
+          src.connect(an);
           t0 = performance.now(); levels.length = 0;
           setState("recording");
           if (!raf) raf = requestAnimationFrame(draw);
+          try { Live.start(ctx, src, speakersPref); } catch { /* captions are optional */ }
         } catch (e) {
           cleanup(); rec = null; setState("idle");
           toast(`Microphone: ${e.name === "NotAllowedError" ? "permission denied" : e.message || e.name}`, "err");
@@ -373,15 +551,19 @@ window.WSW = (() => {
       async function stop() {
         setState("uploading");
         const stopped = new Promise((r) => (rec.onstop = r));
-        rec.stop(); await stopped; cleanup();
+        try { Live.stop(); } catch { /* captions are optional */ }
+        rec.stop(); await stopped;
+        await new Promise((r) => setTimeout(r, 160));   // the captions tap sends its last batch
+        cleanup();
         const blob = new Blob(chunks, { type: mime.split(";")[0] }); chunks = []; rec = null;
-        if (!blob.size) { setState("idle"); toast("Empty recording", "err"); return; }
+        if (!blob.size) { setState("idle"); toast("Empty recording", "err"); Live.done(); return; }
         const r = await postAudio(blob, { ext: extOf(mime), speakers: speakersPref });
         setState("idle");
         timeEl.textContent = "00:00";
         levels.length = 0; draw();
         if (r.error) toast(`Upload failed: ${r.error}`, "err");
         else toast("Recording saved, transcribing now");
+        Live.done();
       }
       return { el };
     })();
@@ -439,7 +621,7 @@ window.WSW = (() => {
       idleDrop();
     }
 
-    return { mount, rows: setRows };
+    return { mount, rows: setRows, liveStats: () => Live.stats() };
   })();
 
   // ------------------------------------------------------------ recording cards (home strip + library page)
@@ -965,7 +1147,8 @@ window.WSW = (() => {
     function diagram() {
       const B = [10, 160], U = [290, 440], I = [590, 780], W = [930, 1070], G = [1200, 1370];
       const rows = [106, 214, 322, 430];            // centre lines of MinIO, Postgres, stream, pub/sub
-      const svg = `<svg class="arch-svg" viewBox="0 0 1380 492" role="img" aria-label="Pipeline: browser, ui, MinIO, Postgres, Redis, worker, GPU ASR service">
+      const L = [546, 590];                         // the live-captions lane, under everything else
+      const svg = `<svg class="arch-svg" viewBox="0 0 1380 640" role="img" aria-label="Pipeline: browser, ui, MinIO, Postgres, Redis, worker, GPU batch ASR service; live captions from the browser through the ui proxy to the GPU streaming ASR service">
         <defs>
           <marker id="ah-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah gold"/></marker>
           <marker id="ah-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah teal"/></marker>
@@ -973,14 +1156,16 @@ window.WSW = (() => {
         </defs>
         <g class="e play"><path d="M${(I[0] + I[1]) / 2} 60 V30 H${(B[0] + B[1]) / 2} V163" marker-end="url(#ah-play)"/>
           <text class="e-label" x="${(U[0] + U[1]) / 2}" y="21" text-anchor="middle">Playback · presigned GET (1 h) · streamed straight from MinIO</text></g>
-        ${node(B[0], 165, B[1] - B[0], 200, "Client", "Browser", ["mic recorder", "waveform", "player"])}
-        ${node(U[0], 60, U[1] - U[0], 416, "Web · :8080", "ui", ["NiceGUI", "websocket push", "custom JS"], { dot: "live" })}
+        ${node(B[0], 165, B[1] - B[0], 460, "Client", "Browser", ["mic recorder", "PCM worklet", "live captions", "waveform", "player"])}
+        ${node(U[0], 60, U[1] - U[0], 565, "Web · :8080", "ui", ["NiceGUI", "websocket push", "/ws/live proxy", "custom JS"], { dot: "live" })}
         ${node(I[0], 60, I[1] - I[0], 92, "Object store · :9000", "MinIO", ["audio · result.json"], { cls: "infra" })}
         ${node(I[0], 168, I[1] - I[0], 92, "Database", "Postgres", ["one row per recording"], { cls: "infra" })}
         ${node(I[0], 276, I[1] - I[0], 92, "Redis stream", "asr-jobs", ["consumer group"], { cls: "infra" })}
         ${node(I[0], 384, I[1] - I[0], 92, "Redis pub/sub", "events", ["recordings.events"], { cls: "infra" })}
         ${node(W[0], 60, W[1] - W[0], 416, "Worker", "worker", ["FastStream", "2 in flight", "retries on 503"])}
-        ${node(G[0], 165, G[1] - G[0], 200, "GPU box · :9100", "ASR service", ["Parakeet · words", "pyannote · speakers", "2× RTX 3090"], { dot: "gpu", cls: "gpu" })}
+        ${node(G[0], 165, G[1] - G[0], 200, "GPU box · :9100", "Batch ASR", ["Parakeet · words", "pyannote · speakers", "2× RTX 3090"], { dot: "gpu", cls: "gpu" })}
+        ${node(G[0], 505, G[1] - G[0], 120, "GPU box · :9101", "Live ASR", ["Nemotron streaming", "4 live sessions"], { dot: "gpulive", cls: "gpu" })}
+        <text class="lane-label" x="${(I[0] + W[1]) / 2}" y="${L[0] - 36}" text-anchor="middle">While recording · live captions (after stop, the file takes the batch path above)</text>
         ${arrow(B[1], U[0], 240, "POST audio", "gold")}
         ${arrow(U[0], B[1], 290, "live status", "teal")}
         ${arrow(U[1], I[0], rows[0], "PUT audio", "gold")}
@@ -993,6 +1178,10 @@ window.WSW = (() => {
         ${arrow(W[0], I[1], rows[3], "PUBLISH done", "teal")}
         ${arrow(W[1], G[0], 240, "/v1/transcribe", "gold")}
         ${arrow(G[0], W[1], 290, "words + who", "teal")}
+        ${arrow(B[1], U[0], L[0], "PCM /ws/live", "gold")}
+        ${arrow(U[0], B[1], L[1], "captions", "teal")}
+        ${arrow(U[1], G[0], L[0], "/v1/stream · 16 kHz PCM · bearer token added server side", "gold")}
+        ${arrow(G[0], U[1], L[1], "{from, segments} updates · words ~0.2 s after they are spoken", "teal")}
       </svg>`;
       const box = h("div.arch-diagram");
       box.innerHTML = svg;
@@ -1012,37 +1201,48 @@ window.WSW = (() => {
         e("gold", "XREADGROUP · 2 in flight"),
         n("Worker", "worker", "FastStream · retries on 503"),
         e("gold", "POST /v1/transcribe"),
-        n("GPU box · :9100", "ASR service", "Parakeet words + pyannote speakers · 2× RTX 3090", "gpu"),
+        n("GPU box · :9100", "Batch ASR", "Parakeet words + pyannote speakers · 2× RTX 3090", "gpu"),
         e("teal", "words + who spoke, back to the worker"),
         h("div.fl-trio", n("MinIO", "result.json"), n("Postgres", "stats · done"), n("Redis pub/sub", "PUBLISH")),
         e("teal", "event → ui → websocket"),
-        n("Client", "Browser", "live status · playback via presigned GET from MinIO"));
+        n("Client", "Browser", "live status · playback via presigned GET from MinIO"),
+        h("div.fl-lane", h("span.split-label", "While recording · live captions")),
+        n("Client", "Browser", "the same mic, 16 kHz PCM from an AudioWorklet"),
+        e("gold", "/ws/live"),
+        n("Web · :8080", "ui proxy", "adds the bearer token server side"),
+        e("gold", "/v1/stream · PCM"),
+        n("GPU box · :9101", "Live ASR", "Nemotron streaming ASR + diarization · 4 live sessions", "gpulive"),
+        e("teal", "captions back over both WebSockets, ~0.2 s behind the voice"),
+        n("Client", "Browser", "captions under the recorder; after stop, the file takes the batch path above"));
     }
 
     const STEPS = [
-      ["Record or upload", "The browser records with MediaRecorder or takes a dropped file and POSTs the raw audio; the ui streams it into MinIO.", ["MediaRecorder", "POST /api/recordings"]],
-      ["Queue", "The ui inserts a Postgres row with status queued and adds a job to the asr-jobs Redis stream.", ["Postgres", "XADD"]],
+      ["Record or upload", "The browser records with MediaRecorder (the file for the accurate pass) or takes a dropped file. While recording, an AudioWorklet taps the same mic at 16 kHz for live captions.", ["MediaRecorder", "AudioWorklet", "16 kHz PCM"]],
+      ["Live captions", "The PCM goes over /ws/live to the ui, which adds the token and relays it to the streaming service on :9101. Captions come back as the words are spoken, speaker-coloured, and are revised in place.", ["/ws/live proxy", "Streaming ASR", ":9101"]],
+      ["Upload + queue", "On stop the recording is POSTed and streamed into MinIO; the ui inserts a Postgres row with status queued and adds a job to the asr-jobs Redis stream.", ["POST /api/recordings", "Postgres", "XADD"]],
       ["Worker claims", "A worker in the consumer group reads the job and flips the row to processing with a conditional UPDATE. If two race, only one wins.", ["Consumer group", "WHERE status = 'queued'"]],
-      ["Transcribe + diarize", "The worker sends the audio to the GPU box: Parakeet writes the words with timestamps, pyannote works out who spoke when. A busy service (503) is waited out and retried.", ["Parakeet", "pyannote", ":9100"]],
-      ["Save", "result.json goes to MinIO; duration, speed, speaker count and the talk-time split land in the Postgres row, status done.", ["MinIO", "Postgres", "speaker_stats"]],
-      ["Live update + playback", "A PUBLISH on Redis pub/sub reaches the ui, which pushes the new status to every open page over its websocket. The player streams the audio from MinIO via a presigned URL.", ["Redis pub/sub", "websocket", "presigned URL"]],
+      ["Transcribe + diarize", "The batch pass, the source of truth: the worker sends the whole file to the GPU box on :9100. Parakeet writes the words with timestamps, pyannote works out who spoke when. A busy service (503) is waited out and retried.", ["Parakeet", "pyannote", ":9100"]],
+      ["Save + live update", "result.json goes to MinIO and the numbers to Postgres, status done. A PUBLISH on Redis pub/sub reaches the ui, which pushes it to every open page; the player streams the audio from MinIO via a presigned URL.", ["MinIO", "Redis pub/sub", "presigned URL"]],
     ];
 
     const SERVICES = [
       ["Frontend · ui", "Who said what", "The pages you are looking at. NiceGUI serves them and pushes every status change over its websocket; the recorder, the drop zone and the player are plain JavaScript.",
-        ["NiceGUI", "Custom JS", "wavesurfer.js", "MediaRecorder"]],
+        ["NiceGUI", "Custom JS", "wavesurfer.js", "MediaRecorder", "AudioWorklet", "/ws/live proxy"]],
       ["Worker · FastStream", "Job runner", "Takes jobs off a Redis stream, sends the audio to the GPU service and writes the result back. Two jobs in flight; a busy service (503) is retried, an interrupted job is picked up again on restart.",
         ["FastStream", "Redis Streams", "Consumer group", "2 in flight", "Retries on 503"]],
       ["Storage", "MinIO + Postgres", "Audio and the raw service response live in MinIO; Postgres keeps one row per recording with its status and numbers. Status events travel over Redis pub/sub.",
         ["MinIO", "Postgres", "Presigned URLs", "Redis pub/sub"]],
-      ["GPU · ASR service", "Parakeet + pyannote", "Speech recognition with word timestamps, then speaker diarization, on the home lab box. Roughly forty times faster than real time.",
+      ["GPU · batch ASR · :9100", "Parakeet + pyannote", "Speech recognition with word timestamps, then speaker diarization, on the home lab box. Roughly forty times faster than real time. The accurate transcript every recording ends up with.",
         ["Parakeet TDT 0.6B v3", "pyannote community-1", "2× RTX 3090", "~40× real time"]],
+      ["GPU · live ASR · :9101", "Nemotron streaming", "Live captions while you record: streaming speech recognition coupled with streaming diarization, over a WebSocket, on the same box and token.",
+        ["Nemotron 3.5 ASR streaming 0.6B", "Nemotron 3 Diarization", "Streaming ASR", "Streaming diarization", "4 live sessions", "~0.2 s word latency"]],
     ];
 
-    function gpuStatus(el) {
+    function gpuStatus(el, pick, name) {
       const paint = (v) => {
-        el.className = "env-status " + (v.ok ? "ok" : v.ok === false ? "bad" : "");
-        el.replaceChildren(h("span.dot"), v.ok ? "Live · ASR service healthy" : v.ok === false ? `Down · ${v.text}` : "Checking…");
+        const x = pick(v) || { ok: null };
+        el.className = "env-status " + (x.ok ? "ok" : x.ok === false ? "bad" : "");
+        el.replaceChildren(h("span.dot"), x.ok ? `${name} · healthy` : x.ok === false ? `${name} down · ${x.text}` : "Checking…");
       };
       healthHooks.push(paint);
       if (lastHealth) paint(lastHealth);
@@ -1053,9 +1253,13 @@ window.WSW = (() => {
       const main = shell("architecture");
       document.title = "Architecture · Who said what";
       setCount(data.count || 0);
-      healthHooks.push((v) => document.querySelectorAll(".sdot.gpu, .sdot-h.gpu").forEach((d) => {
-        d.classList.toggle("ok", !!v.ok); d.classList.toggle("bad", v.ok === false);
-      }));
+      healthHooks.push((v) => {
+        const dots = (sel, x) => document.querySelectorAll(sel).forEach((d) => {
+          d.classList.toggle("ok", !!(x && x.ok)); d.classList.toggle("bad", !!x && x.ok === false);
+        });
+        dots(".sdot.gpu, .sdot-h.gpu", v);
+        dots(".sdot.gpulive, .sdot-h.gpulive", v.live);
+      });
 
       const legend = h("div.legend",
         h("span", h("i.lg.gold"), "Audio in, job out"), h("span", h("i.lg.teal"), "Result + live event back"),
@@ -1072,12 +1276,13 @@ window.WSW = (() => {
         h("div.stamp", stamp), h("div.env-name", name, href ? h("span.arr", "↗") : null), h("div.env-url", url), status);
       const where = h("div.deploy-grid",
         cell("div", "Environment 01", "Local UI", "localhost:8080", h("div.env-status.ok", h("span.dot"), "Live · this page")),
-        cell("div", "Environment 02", "GPU box", "ASR service on the LAN · :9100", gpuStatus(h("div.env-status"))),
+        cell("div", "Environment 02", "GPU box", "Batch :9100 · live :9101, on the LAN",
+          h("div.env-stack", gpuStatus(h("div.env-status"), (v) => v, "Batch"), gpuStatus(h("div.env-status"), (v) => v.live, "Live"))),
         cell("a", "Environment 03", "MinIO console", "localhost:9001", h("div.env-status.ok", h("span.dot"), "Object store · recordings bucket"), "http://localhost:9001"));
 
       main.append(
         h("section.page", pageHead("System", "Architecture",
-          "How a recording travels from your microphone to two GPUs and back, and how every open page hears about it the moment it is done.")),
+          "How a recording travels from your microphone to two GPUs and back: live captions while you speak, then the accurate transcript, and how every open page hears about it the moment it is done.")),
         h("section.arch-sec.first", h("div.panel.diagram-panel", h("div.stamp", "Pipeline"), diagram(), flow(), legend)),
         h("section.arch-sec", secHead("01 · Flow", "How a recording moves"), steps),
         h("section.arch-sec", secHead("02 · Services", "What runs"), services),
@@ -1105,5 +1310,6 @@ window.WSW = (() => {
     gone: () => view === "detail" && Detail.gone(),
     health,
     toast,
+    liveStats: () => (view === "home" ? Home.liveStats() : null),
   };
 })();

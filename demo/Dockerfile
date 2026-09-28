@@ -13,7 +13,7 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy \
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY app.py client.py store.py worker.py ./
+COPY app.py client.py live.py store.py worker.py ./
 COPY sql ./sql
 COPY static ./static
 

@@ -18,15 +18,16 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 from nicegui import Client, app, background_tasks, ui
 
 import client
+import live
 import store
 
 HERE = Path(__file__).parent
-STATE = {"health_ok": None, "health": "checking"}
+STATE = {"health_ok": None, "health": "checking", "live_ok": None, "live": "checking"}
 LISTENERS: set[Callable[[dict], Awaitable[None]]] = set()   # one per open page
 
 
@@ -116,10 +117,16 @@ async def api_health():
     return {"ok": True}
 
 
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket):
+    """Live captions while recording: proxied to the streaming ASR service (live.py)."""
+    await live.proxy(ws)
+
+
 async def health_loop() -> None:
     while True:
-        ok, text = await client.health()
-        STATE.update(health_ok=ok, health=text)
+        (ok, text), (lok, ltext) = await asyncio.gather(client.health(), live.health())
+        STATE.update(health_ok=ok, health=text, live_ok=lok, live=ltext)
         await asyncio.sleep(10)
 
 
@@ -164,6 +171,7 @@ ui.add_head_html(
     '<link rel="preload" href="/static/fonts/AlbertSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     '<link rel="preload" href="/static/fonts/AlumniSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     f'<link rel="stylesheet" href="/static/demo.css?v={_v("demo.css")}">'
+    f'<script>window.WSW_WORKLET = "/static/pcm-worklet.js?v={_v("pcm-worklet.js")}";</script>'
     f'<script src="/static/demo.js?v={_v("demo.js")}"></script>', shared=True)
 
 ROW_FIELDS = ("id", "name", "status", "note", "error", "duration_s", "processing_s", "rtf", "speakers",
@@ -175,7 +183,8 @@ def row_json(m: dict) -> dict:
 
 
 def health_json() -> dict:
-    return {"ok": STATE["health_ok"], "text": STATE["health"], "configured": client.CONFIGURED}
+    return {"ok": STATE["health_ok"], "text": STATE["health"], "configured": client.CONFIGURED,
+            "live": {"ok": STATE["live_ok"], "text": STATE["live"], "configured": live.CONFIGURED}}
 
 
 def mount(view: str, data: dict) -> None:
