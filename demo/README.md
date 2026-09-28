@@ -1,8 +1,8 @@
 # Demo UI: "Who said what"
 
 A small [NiceGUI](https://nicegui.io) web app for showing off the ASR + diarization
-service: record from the microphone (or upload a file) and browse the results —
-transcript split into colour-coded speaker turns, the current word highlighted as the
+service: record from the microphone (or drop in a file) and browse the results — a speaker-coloured
+waveform, the transcript split into speaker turns, the current word highlighted as the
 audio plays, click any word to jump there.
 
 It is built like a small production pipeline: the web app never calls the GPU service
@@ -87,17 +87,22 @@ running this anywhere shared.
 
 ## Use
 
-- **Record**: press the red button, allow the microphone, talk, press again to stop. The
-  recording (webm/opus in Chrome and Firefox, mp4 in Safari) is uploaded and queued. Set
-  **Speakers** if you know how many people are talking; blank lets the model decide.
-- **Upload file**: any audio/video file ffmpeg can decode (wav, mp3, m4a, flac, ogg, webm, …).
-- **List**: newest first, with a live status (queued → preparing audio → transcribing →
-  done / failed), audio length, processing time and speed (`N×` real time = audio seconds
+- **Record**: press the big red button (or Space), allow the microphone, talk, press again to
+  stop. A live level waveform and timer run while recording. The recording (webm/opus in
+  Chrome and Firefox, mp4 in Safari) is uploaded and queued. Pick **Speakers** (Auto / 2 / 3 / 4)
+  if you know how many people are talking; Auto lets the model decide.
+- **Upload**: drop audio or video files anywhere on the page, or click the drop zone to browse
+  (anything ffmpeg can decode: wav, mp3, m4a, flac, ogg, webm, …).
+- **Recordings**: cards, newest first, with a live status (queued → preparing audio →
+  transcribing → done / failed), length, speakers and speed (`N×` real time = audio seconds
   per second of processing, measured by the worker, so it includes the LAN upload). Failed
-  jobs show the reason and a retry button.
-- **Detail** (click a row): player (stays at the top while scrolling), speakers (rename
-  them inline) and stats side by side with **Download JSON** (the raw service response),
-  then the collapsible transcript by speaker turn: click a word or timestamp to seek.
+  jobs show the reason and a retry button. The ⋯ menu renames, downloads the JSON or deletes.
+- **Detail** (click a card): waveform player coloured by speaker (sticky at the top; click to
+  seek, 1× / 1.5× / 2×, Space = play/pause, ←/→ = 5 s), speakers with talk-time share (rename
+  them inline), stats, **Download JSON** (the raw service response) and the collapsible
+  transcript by speaker turn: the current word is highlighted while playing, click any word
+  to seek. The page follows playback until you scroll yourself ("Jump to current" brings it
+  back). Opened while a job runs, it shows live progress and swaps in the result when done.
 
 ## Where the data lives
 
@@ -125,19 +130,20 @@ who is recorded before putting their voice in a video.
 Models behind the service: [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 (CC-BY-4.0: credit NVIDIA if you show its output) and
 [pyannote speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
-(use is subject to its model terms on Hugging Face). Built with NiceGUI (MIT).
+(use is subject to its model terms on Hugging Face). Built with NiceGUI (MIT), wavesurfer.js (BSD-3-Clause), Inter (OFL) and Lucide icons (ISC).
 
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `app.py` | NiceGUI pages, `/api/recordings` upload route, submit/retry/delete, live updates from Redis pub/sub |
+| `app.py` | NiceGUI pages (data + live pushes), `/api/recordings` upload and result download routes, submit/retry/delete/rename, live updates from Redis pub/sub |
 | `worker.py` | FastStream worker: claim, download, transcribe, store result + stats, publish events, recovery on start |
 | `store.py` | Shared plumbing: Postgres (asyncpg), MinIO (aiobotocore, presigned URLs, streamed multipart upload), Redis broker |
 | `client.py` | ASR config and the async HTTP client for `/health` and `/v1/transcribe` (503 / Retry-After handling) |
 | `sql/schema.sql` | The `recordings` table |
-| `static/demo.js` | Browser recorder (MediaRecorder) and transcript/playback sync |
-| `static/demo.css` | Dark theme |
+| `static/demo.js` | The whole front end in plain DOM: pages, recorder (MediaRecorder), uploads, waveform player, transcript/playback sync |
+| `static/demo.css` | Dark theme and layout (no Quasar widgets are used) |
+| `static/vendor/`, `static/fonts/` | wavesurfer.js 7 (BSD-3-Clause) and Inter (OFL), vendored with their licenses; Lucide icon paths (ISC) |
 | `Dockerfile`, `compose.yaml`, `.dockerignore` | One image for `ui` and `worker`; the whole stack |
 
 ## Troubleshooting: "service unreachable" on macOS (running outside Docker)

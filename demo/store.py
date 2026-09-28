@@ -125,6 +125,10 @@ async def rename_speaker(rid: str, speaker: str, name: str) -> None:
                      "WHERE id = $1", rid, speaker, name)
 
 
+async def rename(rid: str, name: str) -> None:
+    await db.execute("UPDATE recordings SET name = $2 WHERE id = $1", rid, name)
+
+
 async def delete(rid: str) -> None:
     await db.execute("DELETE FROM recordings WHERE id = $1", rid)
     await delete_objects(rid)
