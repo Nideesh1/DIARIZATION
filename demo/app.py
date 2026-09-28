@@ -8,6 +8,7 @@ Run:  cd demo && docker compose up -d --build   ->  http://localhost:8080
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import mimetypes
 import os
@@ -128,12 +129,23 @@ app.add_static_files("/static", HERE / "static")
 # The pages are rendered by static/demo.js into #wsw (plain DOM, no Quasar widgets); NiceGUI
 # serves them and carries the live updates (server -> WSW.* calls) and the user's actions
 # (emitEvent("wsw", {...}) -> the page's handler) over its websocket.
+def _v(*names: str) -> str:
+    """Cache-busting version: a short hash of the static files' contents, so a normal reload
+    picks up a rebuilt demo.css / demo.js instead of the browser's cached copy."""
+    h = hashlib.sha1()
+    for n in names:
+        h.update((HERE / "static" / n).read_bytes())
+    return h.hexdigest()[:10]
+
+
+# The font preloads keep the exact URLs the @font-face rules in demo.css use (a query string
+# would make the preload miss and the font download twice); fonts are never edited in place.
 ui.add_head_html(
     '<meta name="theme-color" content="#010101">'
     '<link rel="preload" href="/static/fonts/AlbertSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
     '<link rel="preload" href="/static/fonts/AlumniSans-latin.woff2" as="font" type="font/woff2" crossorigin>'
-    '<link rel="stylesheet" href="/static/demo.css">'
-    '<script src="/static/demo.js"></script>', shared=True)
+    f'<link rel="stylesheet" href="/static/demo.css?v={_v("demo.css")}">'
+    f'<script src="/static/demo.js?v={_v("demo.js")}"></script>', shared=True)
 
 ROW_FIELDS = ("id", "name", "status", "note", "error", "duration_s", "processing_s", "rtf", "speakers",
               "words", "stt_model", "diar_model", "num_speakers_hint", "speaker_stats", "speaker_names")
