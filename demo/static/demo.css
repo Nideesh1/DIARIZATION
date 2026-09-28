@@ -82,3 +82,4 @@ body { font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; f
   .transcript-exp .q-expansion-item__content { padding: 0 16px 20px 14px; }
 }
 .actions { width: 96px; flex-shrink: 0; }
+.chip.queued { background: #1f2937; color: #cbd5e1; }
