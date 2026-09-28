@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -91,6 +93,15 @@ async def insert(rid: str, name: str, ext: str, num_speakers: int | None) -> Non
                      "VALUES ($1, $2, $3, $4, $5)", rid, name, ext, audio_key(rid, ext), num_speakers)
 
 
+async def insert_live(rid: str, name: str, ext: str, num_speakers: int | None, **fields) -> None:
+    """A LIVE-mode recording: its audio and result.json are already in MinIO, so the row goes in
+    once, already done (source = live). No job is queued; nothing can see it half-saved."""
+    cols = ["id", "name", "ext", "audio_key", "num_speakers_hint", "status", "source", *fields]
+    vals = [rid, name, ext, audio_key(rid, ext), num_speakers, "done", "live", *fields.values()]
+    await db.execute(f"INSERT INTO recordings ({', '.join(cols)}) "
+                     f"VALUES ({', '.join(f'${i}' for i in range(1, len(cols) + 1))})", *vals)
+
+
 async def claim(rid: str) -> dict | None:
     """queued -> processing. Only one caller wins; anyone else gets None (idempotency)."""
     return _row(await db.fetchrow(
@@ -114,12 +125,13 @@ async def requeue(rid: str) -> bool:
 
 
 async def rerun(rid: str, num_speakers: int | None) -> bool:
-    """done/failed -> queued with a new speaker-count hint (the detail page's Re-run). One atomic
+    """done/failed -> queued with a new speaker-count hint (the detail page's Re-run, and the
+    "upgrade" of a live recording: from here on it is a batch recording). One atomic
     UPDATE, so a row already queued/processing is left alone (False) and the worker's claim
     (queued -> processing) stays the only way in. The audio is kept; the old result is dropped
     here and its result.json overwritten by the new run."""
     res = await db.execute(
-        "UPDATE recordings SET status = 'queued', num_speakers_hint = $2, note = NULL, error = NULL, "
+        "UPDATE recordings SET status = 'queued', source = 'batch', num_speakers_hint = $2, note = NULL, error = NULL, "
         "result_key = NULL, processing_s = NULL, rtf = NULL, speakers = NULL, words = NULL, "
         "stt_model = NULL, diar_model = NULL, speaker_stats = NULL, speaker_names = '{}', updated_at = now() "
         "WHERE id = $1 AND status IN ('done', 'failed')", rid, num_speakers)
@@ -181,6 +193,26 @@ def speaker_stats(res: dict) -> list[dict]:
     total = sum(talk.values())
     return [{"speaker": s, "seconds": round(talk.get(s, 0), 2),
              "share": round(talk.get(s, 0) / total, 4) if total else 0} for s in labels]
+
+
+# ------------------------------------------------------------------ audio files
+def prepare_audio(path: Path) -> tuple[float | None, bool]:
+    """Remux browser webm (it has no duration/cues, so players can't seek) and probe the
+    duration. Returns (seconds, remuxed). Used by the worker and by the live-mode save."""
+    remuxed = False
+    if path.suffix == ".webm" and shutil.which("ffmpeg"):
+        fixed = path.with_name("remux.webm")
+        p = subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(path), "-c", "copy",
+                            str(fixed)], capture_output=True, timeout=300)
+        if p.returncode == 0 and fixed.stat().st_size > 0:
+            fixed.replace(path)
+            remuxed = True
+    p = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                        str(path)], capture_output=True, text=True, timeout=60)
+    try:
+        return round(float(p.stdout.strip()), 2), remuxed
+    except ValueError:
+        return None, remuxed
 
 
 # ------------------------------------------------------------------ MinIO (S3 API)

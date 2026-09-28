@@ -10,9 +10,15 @@ itself. It stores the audio in object storage, writes a row to Postgres and puts
 queue; a separate worker does the transcription and reports back, and every open browser
 updates live.
 
-While you record, **live captions** appear under the recorder, speaker-coloured, about 0.2–0.3 s
-behind the voice (see [Live captions](#live-captions-hybrid)). They come from a separate streaming service; the
-transcript you keep still comes from the batch pass after you stop.
+The recorder has two modes (a `LIVE | RECORD` switch, remembered in the browser; see
+[Two modes](#two-modes-live-and-record)):
+
+- **LIVE**: a focused live view while you talk: a sticky recording bar and the transcript as
+  speaker-coloured chat turns, about 0.2–0.3 s behind the voice, from a separate streaming service
+  (Nemotron). On stop that live transcript is saved as the recording's result (no batch job) and
+  you land on its page; **Upgrade to accurate transcript** runs the batch pass on it later.
+- **RECORD** (and every upload): record, then the queue → worker → batch service (Parakeet +
+  pyannote) builds the accurate, word-timed transcript. No live connection is opened.
 
 ## Architecture
 
@@ -47,12 +53,14 @@ browser (mic / upload)
 | `minio` | S3-compatible object storage, bucket `recordings`. API on `127.0.0.1:9000` (the browser fetches audio here), console on `127.0.0.1:9001`. |
 | `minio-init` | One-shot: creates the bucket, then exits. |
 
-## Live captions (hybrid)
+## Two modes: LIVE and RECORD
 
-Two passes over the same recording, each doing what it is good at:
+Every recording row has a `source`: `live` (saved from the live service) or `batch` (the batch
+pass). Cards and the detail page show it as **LIVE · NEMOTRON** or **BATCH · PARAKEET + PYANNOTE**.
 
 ```
-while recording:  browser mic ─┬─ MediaRecorder ─► the file (kept in memory until stop)
+LIVE mode, while recording:
+                  browser mic ─┬─ MediaRecorder ─► the file (kept in memory until stop)
                                └─ AudioWorklet (16 kHz PCM, ~80 ms batches)
                                       │  WebSocket /ws/live            (same origin, no token)
                                       ▼
@@ -62,9 +70,15 @@ while recording:  browser mic ─┬─ MediaRecorder ─► the file (kept in m
                                   streaming ASR + speaker labels (../stream, Nemotron)
                                       │  {"type":"update","from":i,"segments":[…]}
                                       ▼
-                                  captions under the recorder (speaker 0 → "Speaker 1", …)
-after stop:       the file → POST /api/recordings → queue → worker → batch service :9100
-                  (Parakeet + pyannote): the accurate transcript, the source of truth
+                                  the live view: chat turns (speaker 0 → "Speaker 1", …)
+LIVE, on stop:    {"type":"stop"} → the service sends "final" (every segment) →
+                  POST /api/recordings/live  (multipart: audio + {"segments", "latency_s"})
+                  → ui: remux webm, audio → MinIO, result.json → MinIO, then INSERT the row
+                    already done (source = live). No job.
+RECORD / upload:  the file → POST /api/recordings → queue → worker → batch service :9100
+                  (Parakeet + pyannote), source = batch
+Upgrade:          a live recording's "Upgrade to accurate transcript" (or Re-run) = the batch
+                  re-run path; it becomes source = batch, with word timings
 ```
 
 - **Live**: [`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)
@@ -73,8 +87,17 @@ after stop:       the file → POST /api/recordings → queue → worker → bat
   (Auto → 4). Words arrive about 0.2 s after they are spoken (service p50) and are revised in
   place; the pill on the captions shows the measured lag. Measured in this demo with Chromium's
   fake mic playing a two-speaker clip: p50 ≈ 0.3 s, p95 ≈ 0.5 s from capture to caption.
-- **Batch**: the same recording is uploaded and processed exactly as before; its transcript is what
-  is stored and shown on the detail page. Live captions are not saved.
+- **Saving a live recording** is one request, so a row can never be `done` without its
+  transcript: the audio and `result.json` are written to MinIO first and the row is inserted last
+  (already done); any failure removes what was written. `result.json` has the batch shape as far as
+  it goes (`segments` with `speaker`/`start`/`end`/`text`, `speakers`, `model`, plus `source`,
+  `latency_s`) but `words` is empty: the live service has no word timings, so the detail page
+  highlights and seeks by **segment** (click a turn to jump to it). Segment times are shifted by
+  the small gap between MediaRecorder starting and the PCM tap starting, so they match the file.
+- **Fallback**: if the live service is unavailable (or drops, or saving the live result fails),
+  the LIVE view says so ("Live captions unavailable — the full transcript will be ready after you
+  stop"), keeps recording, and on stop the file takes the batch path: the bar shows saved →
+  queued → preparing → transcribing and the page opens the recording when it is done.
 - **The proxy** (`live.py`, route `/ws/live` on NiceGUI's FastAPI app) keeps the token server side:
   it rebuilds the start message from the known fields only (any `token` from the browser is
   dropped), refuses cross-origin pages, relays binary audio up (≤ 1 MiB, whole samples) and JSON
@@ -83,9 +106,8 @@ after stop:       the file → POST /api/recordings → queue → worker → bat
   small socket queues, and a peer that does not accept a message within 5 s drops the session
   instead of buffering. It logs session open/end with the reason and audio length, never audio,
   text or the token.
-- **Never in the way**: if the live service is down, busy, loading or refuses the token, the page
-  shows "Live captions unavailable: the full transcript will still be generated" and recording
-  carries on normally.
+- **Never in the way**: if the live service is down, busy, loading or refuses the token, recording
+  carries on normally and the batch pass makes the transcript (see Fallback).
 - The header shows two pills, **Batch** (`ASR_URL/health`) and **Live** (the `/health` next to
   `ASR_STREAM_URL`), checked every 10 s by the ui.
 - Browser side: one 16 kHz `AudioContext` feeds the level meter and `static/pcm-worklet.js`
@@ -136,10 +158,15 @@ running this anywhere shared.
 
 ## Use
 
-- **Record**: press the big red button (or Space), allow the microphone, talk, press again to
-  stop. A live level waveform, a timer and live captions run while recording. The recording (webm/opus in
-  Chrome and Firefox, mp4 in Safari) is uploaded and queued. Pick **Speakers** (Auto / 2 / 3 / 4)
-  if you know how many people are talking; Auto lets the model decide.
+- **Record**: pick **LIVE** or **RECORD**, press the big red button (or Space), allow the
+  microphone, talk, press again (or Space) to stop. Pick **Speakers** (Auto / 1–4) first if you know
+  how many people are talking; Auto lets the model decide (it is fixed while recording).
+  - LIVE: the page switches to the live view: a sticky bar (REC, timer, level meter, speakers,
+    live latency pill, Stop) over the transcript as it is spoken. It follows the newest line while
+    you are at the bottom; scroll up to read and it stops following ("Jump to live" resumes). On
+    stop the live transcript is saved and its page opens.
+  - RECORD: a level waveform and timer run in the card; on stop the recording (webm/opus in Chrome
+    and Firefox, mp4 in Safari) is uploaded and queued for the batch pass.
 - **Upload**: drop audio or video files anywhere on the page, or click the drop zone to browse
   (anything ffmpeg can decode: wav, mp3, m4a, flac, ogg, webm, …).
 - **Recordings**: cards, newest first, with a live status (queued → preparing audio →
@@ -152,6 +179,8 @@ running this anywhere shared.
   transcript by speaker turn: the current word is highlighted while playing, click any word
   to seek. The page follows playback until you scroll yourself ("Jump to current" brings it
   back). Opened while a job runs, it shows live progress and swaps in the result when done.
+  A live recording highlights whole segments instead of words and offers **Upgrade to accurate
+  transcript** (the batch pass; the Re-run control does the same with a speaker count).
 
 ## Where the data lives
 
@@ -162,7 +191,7 @@ running this anywhere shared.
 - **Rows**: Postgres table `recordings` in the named volume `demo_postgres-data`.
 
 ```bash
-docker compose exec postgres psql -U demo -d demo -c "select id, name, status, duration_s, rtf, speakers from recordings"
+docker compose exec postgres psql -U demo -d demo -c "select id, name, status, source, duration_s, rtf, speakers from recordings"
 docker compose exec redis redis-cli XINFO GROUPS asr-jobs     # consumer group, pending jobs
 docker compose down -v                                        # stop AND wipe all recordings (both volumes)
 ```
@@ -186,14 +215,14 @@ and Nemotron 3 Diarization (see `../stream/README.md`). Built with NiceGUI (MIT)
 
 | File | Purpose |
 |------|---------|
-| `app.py` | NiceGUI pages (data + live pushes), `/api/recordings` upload and result download routes, submit/retry/delete/rename, live updates from Redis pub/sub |
+| `app.py` | NiceGUI pages (data + live pushes), `/api/recordings` upload, `/api/recordings/live` (LIVE-mode save) and result download routes, submit/retry/delete/rename, live updates from Redis pub/sub |
 | `worker.py` | FastStream worker: claim, download, transcribe, store result + stats, publish events, recovery on start |
 | `store.py` | Shared plumbing: Postgres (asyncpg), MinIO (aiobotocore, presigned URLs, streamed multipart upload), Redis broker |
 | `live.py` | The `/ws/live` WebSocket proxy to the streaming service (token added server side) and its health check |
 | `client.py` | ASR config and the async HTTP client for `/health` and `/v1/transcribe` (503 / Retry-After handling) |
 | `sql/schema.sql` | The `recordings` table |
-| `static/pcm-worklet.js` | AudioWorklet: mic → 16 kHz Int16 PCM batches for live captions |
-| `static/demo.js` | The whole front end in plain DOM: pages, recorder (MediaRecorder + live captions), uploads, waveform player, transcript/playback sync |
+| `static/pcm-worklet.js` | AudioWorklet: mic → 16 kHz Int16 PCM batches for LIVE mode |
+| `static/demo.js` | The whole front end in plain DOM: pages, recorder (LIVE / RECORD), the live session view, uploads, waveform player, transcript/playback sync |
 | `static/demo.css` | Dark theme and layout (no Quasar widgets are used) |
 | `static/vendor/`, `static/fonts/` | wavesurfer.js 7 (BSD-3-Clause) and the Alumni Sans + Albert Sans fonts (OFL), vendored with their licenses; Lucide icon paths (ISC) |
 | `Dockerfile`, `compose.yaml`, `.dockerignore` | One image for `ui` and `worker`; the whole stack |
