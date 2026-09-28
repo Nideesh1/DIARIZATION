@@ -205,11 +205,24 @@ async def common_action(c: Client, a: dict) -> bool:
     return True
 
 
+async def all_rows() -> list[dict]:
+    return [row_json(m) for m in await store.list_recordings()]
+
+
+async def watch_count(c: Client) -> None:
+    """Keep the header's recordings count live on pages that don't get the full row list."""
+    async def on_change(event: dict) -> None:
+        if event.get("status") in ("queued", "deleted", None):
+            push(c, "count", len(await store.list_recordings()))
+    listen(on_change)
+    await on_change({})
+
+
 # ------------------------------------------------------------------ pages
-@ui.page("/", title="Who said what")
-async def index() -> None:
+async def library_page(view: str) -> None:
+    """/ (record + upload + the latest few) and /recordings (everything): both get every row, live."""
     c = ui.context.client
-    mount("home", {"rows": [row_json(m) for m in await store.list_recordings()]})
+    mount(view, {"rows": await all_rows()})
 
     async def act(a: dict) -> None:
         await common_action(c, a)
@@ -218,9 +231,28 @@ async def index() -> None:
     await c.connected()
 
     async def on_change(_event: dict) -> None:     # pushed over the websocket: no reload
-        push(c, "rows", [row_json(m) for m in await store.list_recordings()])
+        push(c, "rows", await all_rows())
     listen(on_change)
     await on_change({})                            # anything that changed while connecting
+
+
+@ui.page("/", title="Who said what")
+async def index() -> None:
+    await library_page("home")
+
+
+@ui.page("/recordings", title="Recordings · Who said what")
+async def recordings() -> None:
+    await library_page("recordings")
+
+
+@ui.page("/architecture", title="Architecture · Who said what")
+async def architecture() -> None:
+    c = ui.context.client
+    mount("architecture", {"count": len(await store.list_recordings())})
+    watch_health(c)
+    await c.connected()
+    await watch_count(c)
 
 
 def build_result(m: dict, res: dict) -> dict:
@@ -262,7 +294,8 @@ async def detail(rid: str) -> None:
         return {"row": row_json(m), "audio": await store.presigned_url(m["audio_key"]),
                 "result": build_result(m, res) if res else None}
 
-    mount("detail", await payload(m) if m else {"row": None})
+    count = len(await store.list_recordings())
+    mount("detail", {**(await payload(m) if m else {"row": None}), "count": count})
     if not m:
         return
     shown = {"status": m["status"], "note": m["note"], "name": m["name"]}
@@ -291,6 +324,7 @@ async def detail(rid: str) -> None:
         push(c, "detail", await payload(m) if became_done else {"row": row_json(m)})
     listen(on_change)
     await on_change({"id": None})
+    await watch_count(c)
 
 
 if __name__ in {"__main__", "__mp_main__"}:

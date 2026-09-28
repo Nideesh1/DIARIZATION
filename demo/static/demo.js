@@ -165,21 +165,32 @@ window.WSW = (() => {
   }
 
   // ------------------------------------------------------------ shell
-  let healthEl, bannerEl;
-  function shell() {
+  // every page: top bar (brand, nav, ASR health), an optional config banner, main, footer
+  let healthEl, bannerEl, navCountEl, lastHealth = null;
+  const healthHooks = [];        // extra places that show the ASR state (the architecture page)
+  const NAV = [["home", "/", "New recording", "New"], ["recordings", "/recordings", "Recordings", "Recordings"],
+               ["architecture", "/architecture", "Architecture", "Architecture"]];
+  function shell(active) {
     const root = document.getElementById("wsw");
     root.replaceChildren();
     healthEl = h("div.health", { title: "GPU transcription service" }, h("span.dot"), h("span", "Checking…"));
+    navCountEl = h("span.nav-count.tnum", String(navCount));
+    const nav = h("nav.nav", { "aria-label": "Pages" }, NAV.map(([key, href, label, short]) =>
+      h("a.nav-link", { href, cls: key === active ? "on" : "", "aria-current": key === active ? "page" : null },
+        h("span.nav-full", label), h("span.nav-short", short), key === "recordings" ? navCountEl : null)));
     root.append(h("div.top-seam"), h("header.topbar",
-      h("a.brand", { href: "/" }, h("img", { src: "/static/favicon.svg", alt: "" }), "Who said what"),
-      h("div.spacer"), h("span.doc-ref", "Speech / Speakers / Transcript"), healthEl));
+      h("a.brand", { href: "/" }, h("img", { src: "/static/favicon.svg", alt: "" }), h("span", "Who said what")),
+      nav, h("div.spacer"), healthEl));
     bannerEl = root.appendChild(h("div", { hidden: true }));
     const main = root.appendChild(h("main.wrap"));
     root.append(h("footer.site-footer", h("span.f-note", "Who said what · self-hosted"), h("span.f-note", "Parakeet ASR / pyannote diarization")));
     return main;
   }
+  let navCount = 0;
+  function setCount(n) { navCount = n; if (navCountEl) navCountEl.textContent = n; }
 
   function health(v) {
+    lastHealth = v;
     if (!healthEl) return;
     healthEl.className = "health " + (v.ok ? "ok" : v.ok === false ? "bad" : "");
     healthEl.lastChild.textContent = v.ok ? "ASR online" : v.ok === false ? `ASR ${v.text}` : "Checking…";
@@ -187,7 +198,14 @@ window.WSW = (() => {
     bannerEl.hidden = v.configured !== false;
     bannerEl.className = "banner";
     bannerEl.textContent = "ASR_URL / ASR_TOKEN are not set: recordings are saved but cannot be transcribed. Set them in demo/.env and restart.";
+    healthHooks.forEach((fn) => fn(v));
   }
+
+  // teal mono label, thin display title, grey lead; optional right-hand side
+  const pageHead = (label, title, lead, right = null) => h("div.sec-head",
+    h("div", h("div.split-label", label), h("h1.page-title", title), lead ? h("p.page-lead", lead) : null), right);
+  const secHead = (label, title, right = null) => h("div.list-head", h("div", h("div.split-label", label), h("h2", title)), right);
+  const moreLink = (href, text) => h("a.more-link", { href }, text, h("span.arr", "→"));
 
   // ------------------------------------------------------------ uploads (recorder + files)
   function postAudio(blob, { ext, name, speakers, onProgress }) {
@@ -210,12 +228,16 @@ window.WSW = (() => {
   }
 
   // ------------------------------------------------------------ home
+  const tickAgo = () => setInterval(() => document.querySelectorAll("[data-ago]").forEach((el) => (el.textContent = ago(el.dataset.ago))), 30000);
+
   const Home = (() => {
-    let grid, countEl, cards = new Map(), rows = [];
+    let lib, recentCount;
     let speakersPref = localStorage.getItem("wsw.speakers") || "";
 
     function mount(data) {
-      const main = shell();
+      const main = shell("home");
+      lib = Library({ limit: 3, cls: "recent",
+        empty: () => h("div.empty.slim", h("h3", "Nothing here yet"), h("p", "Your latest recordings show up here as soon as they are saved.")) });
       main.append(
         h("section.hero",
           h("div.page-head",
@@ -225,13 +247,16 @@ window.WSW = (() => {
             h("p.page-lead", "Record a conversation or drop in a file. Get a word-timed transcript, split by speaker, in seconds.")),
           h("div.studio", Recorder.el(), dropZone())),
         h("section.library",
-          h("div.list-head",
-            h("div", h("div.split-label", "Library"), h("h2", "Recordings")),
-            (countEl = h("span.count.tnum", "0"))),
-          (grid = h("div.grid"))));
+          secHead((recentCount = h("span", "Recent")), "Latest recordings", moreLink("/recordings", "View all recordings")),
+          lib.el));
       pageDrop();
       setRows(data.rows, true);
-      setInterval(() => document.querySelectorAll("[data-ago]").forEach((el) => (el.textContent = ago(el.dataset.ago))), 30000);
+      tickAgo();
+    }
+    function setRows(list, first = false) {
+      setCount(list.length);
+      recentCount.textContent = list.length > 3 ? `Recent · 3 of ${list.length}` : "Recent";
+      lib.set(list, first);
     }
 
     function speakersControl() {
@@ -413,13 +438,23 @@ window.WSW = (() => {
       idleDrop();
     }
 
-    // ---- cards
-    function setRows(list, first = false) {
+    return { mount, rows: setRows };
+  })();
+
+  // ------------------------------------------------------------ recording cards (home strip + library page)
+  // Library({limit, cls, empty, filter}) -> {el, set(rows, first), setFilter(fn)}: a live card grid.
+  // Cards are keyed by id and patched in place, so a status change never re-creates the card.
+  function Library({ limit = 0, cls = "", empty }) {
+    const grid = h("div.grid", { cls });
+    const cards = new Map();
+    let rows = [], match = () => true;
+
+    function set(list, first = false) {
       rows = list;
-      countEl.textContent = list.length;
+      const shown = list.filter(match).slice(0, limit || undefined);
       const seen = new Set();
       let prev = null;
-      for (const m of list) {
+      for (const m of shown) {
         seen.add(m.id);
         let c = cards.get(m.id);
         const key = JSON.stringify(m);
@@ -442,94 +477,134 @@ window.WSW = (() => {
           setTimeout(() => c.el.remove(), 220);
         }
       }
-      let empty = grid.querySelector(".empty");
-      if (!list.length && !empty) {
-        grid.append(h("div.empty", h("div.empty-art", [18, 32, 24, 40, 20, 30, 14].map((v, i) => h("i", { style: { height: `${v}px`, animationDelay: `${i * 0.12}s` } }))),
-          h("h3", "No recordings yet"), h("p", "Press the record button to capture a conversation, or drop an audio file anywhere on this page.")));
-      } else if (list.length && empty) empty.remove();
+      const emptyEl = grid.querySelector(".empty");
+      if (!shown.length) {
+        const next = empty(list);
+        if (emptyEl) emptyEl.replaceWith(next); else grid.append(next);
+      } else if (emptyEl) emptyEl.remove();
     }
+    return { el: grid, set, setFilter: (fn, render = true) => { match = fn; if (render) set(rows); } };
+  }
 
-    function card(m) {
-      const c = { el: h("div.card", { role: "link", tabindex: 0 }), id: m.id };
-      c.el.addEventListener("click", (e) => { if (!c.editing && !e.target.closest("button, input")) location.href = `/r/${m.id}`; });
-      c.el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === c.el) location.href = `/r/${m.id}`; });
-      fillCard(c, m);
-      return c;
-    }
+  const emptyArt = () => h("div.empty-art", [18, 32, 24, 40, 20, 30, 14].map((v, i) => h("i", { style: { height: `${v}px`, animationDelay: `${i * 0.12}s` } })));
 
-    function fillCard(c, m) {
-      c.m = m;
-      const st = m.status;
-      const badge = h("div.badge", { cls: st }, st === "processing" ? h("div.spin") : icon(st === "failed" ? "alert" : st === "queued" ? "clock" : "wave"));
-      const sub = [h("span", { "data-ago": m.created_at }, ago(m.created_at))];
-      if (m.duration_s) sub.push(" · ", h("span.tnum", clock(m.duration_s)));
-      const nameEl = h("div.card-name", { title: m.name }, m.name);
-      const more = h("button.icon-btn.menu-btn", { "aria-label": "More actions", on: { click: (e) => { e.stopPropagation(); cardMenu(c, more); } } }, icon("more"));
-      c.nameEl = nameEl;
-      c.el.replaceChildren(
-        h("div.card-top", badge, h("div.card-title", h("div.stamp", { cls: st }, STAMP[st] || st), nameEl, h("div.card-sub", sub)), more),
-        h("div.card-foot", footer(c, m)));
-    }
+  function card(m) {
+    const c = { el: h("div.card", { role: "link", tabindex: 0 }), id: m.id };
+    c.el.addEventListener("click", (e) => { if (!c.editing && !e.target.closest("button, input")) location.href = `/r/${m.id}`; });
+    c.el.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === c.el) location.href = `/r/${m.id}`; });
+    fillCard(c, m);
+    return c;
+  }
 
-    const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
-    function footer(c, m) {
-      if (m.status === "done") {
-        const st = Array.isArray(m.speaker_stats) && m.speaker_stats.length ? m.speaker_stats : null;
-        const n = st ? st.length : m.speakers || 0;
-        let label = n ? plural(n, "speaker") : "No speech", tip = null;
-        if (st) {
-          // same share as the detail page's Speakers card: talk / total, rounded per speaker
-          const total = st.reduce((a, s) => a + s.seconds, 0) || 1;
-          const pct = st.map((s) => Math.round((s.seconds / total) * 100));
-          label += ` · ${pct.slice(0, 4).map((p) => `${p}%`).join(" / ")}${n > 4 ? ` +${n - 4}` : ""}`;
-          const names = m.speaker_names || {};
-          tip = st.map((s, i) => `${names[s.speaker] || `Speaker ${i + 1}`} ${pct[i]}%`).join(" · ");
-        }
-        return [h("span.dots-wrap", { title: tip }, h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))),
-                  h("span.dots-label.tnum", label)),
-                speed(m.rtf) ? h("span.pill.speed", speed(m.rtf)) : null];
+  function fillCard(c, m) {
+    c.m = m;
+    const st = m.status;
+    const badge = h("div.badge", { cls: st }, st === "processing" ? h("div.spin") : icon(st === "failed" ? "alert" : st === "queued" ? "clock" : "wave"));
+    const sub = [h("span", { "data-ago": m.created_at }, ago(m.created_at))];
+    if (m.duration_s) sub.push(" · ", h("span.tnum", clock(m.duration_s)));
+    const nameEl = h("div.card-name", { title: m.name }, m.name);
+    const more = h("button.icon-btn.menu-btn", { "aria-label": "More actions", on: { click: (e) => { e.stopPropagation(); cardMenu(c, more); } } }, icon("more"));
+    c.nameEl = nameEl;
+    c.el.replaceChildren(
+      h("div.card-top", badge, h("div.card-title", h("div.stamp", { cls: st }, STAMP[st] || st), nameEl, h("div.card-sub", sub)), more),
+      h("div.card-foot", footer(c, m)));
+  }
+
+  const STAMP = { done: "Transcribed", queued: "Queued", processing: "Processing", failed: "Failed" };
+  function footer(c, m) {
+    if (m.status === "done") {
+      const st = Array.isArray(m.speaker_stats) && m.speaker_stats.length ? m.speaker_stats : null;
+      const n = st ? st.length : m.speakers || 0;
+      let label = n ? plural(n, "speaker") : "No speech", tip = null;
+      if (st) {
+        // same share as the detail page's Speakers card: talk / total, rounded per speaker
+        const total = st.reduce((a, s) => a + s.seconds, 0) || 1;
+        const pct = st.map((s) => Math.round((s.seconds / total) * 100));
+        label += ` · ${pct.slice(0, 4).map((p) => `${p}%`).join(" / ")}${n > 4 ? ` +${n - 4}` : ""}`;
+        const names = m.speaker_names || {};
+        tip = st.map((s, i) => `${names[s.speaker] || `Speaker ${i + 1}`} ${pct[i]}%`).join(" · ");
       }
-      if (m.status === "queued") return [h("span.pill.queued", "Queued"), h("span.steps-count", "waiting for a worker")];
-      if (m.status === "processing") {
-        const step = /^preparing/.test(m.note || "") ? 1 : 2;
-        return h("div.steps",
-          h("div.steps-row", h("span.steps-note", m.note || "processing"), h("span.steps-count", `step ${step} of 2`)),
-          h("div.bar.indet", h("i", { style: { width: step === 1 ? "35%" : "75%" } })));
-      }
-      return h("div.fail", h("div.fail-msg", { title: m.error || "" }, m.error || "Failed"),
-        h("button.btn.btn-sm", { on: { click: (e) => { e.stopPropagation(); send("retry", { id: m.id }); } } }, icon("retry"), "Retry"));
+      return [h("span.dots-wrap", { title: tip }, h("span.dots", Array.from({ length: Math.min(n, 8) }, (_, i) => h("i", { style: { background: PALETTE[i % PALETTE.length] } }))),
+                h("span.dots-label.tnum", label)),
+              speed(m.rtf) ? h("span.pill.speed", speed(m.rtf)) : null];
     }
-
-    function cardMenu(c, anchor) {
-      const m = c.m, items = [{ icon: "pencil", label: "Rename", run: () => rename(c) }];
-      if (m.status === "done") items.push({ icon: "download", label: "Download JSON", run: () => (location.href = `/api/recordings/${m.id}/result.json`) });
-      if (m.status === "failed") items.push({ icon: "retry", label: "Retry", run: () => send("retry", { id: m.id }) });
-      items.push("-", { icon: "trash", label: "Delete", danger: true, run: () => del(m) });
-      menu(anchor, items);
+    if (m.status === "queued") return [h("span.pill.queued", "Queued"), h("span.steps-count", "waiting for a worker")];
+    if (m.status === "processing") {
+      const step = /^preparing/.test(m.note || "") ? 1 : 2;
+      return h("div.steps",
+        h("div.steps-row", h("span.steps-note", m.note || "processing"), h("span.steps-count", `step ${step} of 2`)),
+        h("div.bar.indet", h("i", { style: { width: step === 1 ? "35%" : "75%" } })));
     }
+    return h("div.fail", h("div.fail-msg", { title: m.error || "" }, m.error || "Failed"),
+      h("button.btn.btn-sm", { on: { click: (e) => { e.stopPropagation(); send("retry", { id: m.id }); } } }, icon("retry"), "Retry"));
+  }
 
-    function rename(c) {
-      c.editing = true;
-      const inp = inlineInput(c.m.name, (v) => {
-        if (!v) return c.m.name;
-        send("rename", { id: c.m.id, name: v });
-        return v;
-      }, { cls: "card-name", label: "Recording name" });
-      inp.addEventListener("blur", () => setTimeout(() => {
-        c.editing = false;
-        fillCard(c, { ...c.m, name: inp.value || c.m.name });
-      }));
-      c.nameEl.replaceWith(inp);
-      inp.focus(); inp.select();
+  function cardMenu(c, anchor) {
+    const m = c.m, items = [{ icon: "pencil", label: "Rename", run: () => rename(c) }];
+    if (m.status === "done") items.push({ icon: "download", label: "Download JSON", run: () => (location.href = `/api/recordings/${m.id}/result.json`) });
+    if (m.status === "failed") items.push({ icon: "retry", label: "Retry", run: () => send("retry", { id: m.id }) });
+    items.push("-", { icon: "trash", label: "Delete", danger: true, run: () => del(m) });
+    menu(anchor, items);
+  }
+
+  function rename(c) {
+    c.editing = true;
+    const inp = inlineInput(c.m.name, (v) => {
+      if (!v) return c.m.name;
+      send("rename", { id: c.m.id, name: v });
+      return v;
+    }, { cls: "card-name", label: "Recording name" });
+    inp.addEventListener("blur", () => setTimeout(() => {
+      c.editing = false;
+      fillCard(c, { ...c.m, name: inp.value || c.m.name });
+    }));
+    c.nameEl.replaceWith(inp);
+    inp.focus(); inp.select();
+  }
+
+  async function del(m) {
+    if (await confirmDialog({ title: "Delete recording?", body: `“${m.name}” and its audio and transcript will be removed. This can't be undone.` })) {
+      send("delete", { id: m.id });
+      toast("Recording deleted");
     }
+  }
 
-    async function del(m) {
-      if (await confirmDialog({ title: "Delete recording?", body: `“${m.name}” and its audio and transcript will be removed. This can't be undone.` })) {
-        send("delete", { id: m.id });
-        toast("Recording deleted");
-      }
+  // ------------------------------------------------------------ /recordings: the whole library
+  const Recordings = (() => {
+    let lib, labelEl, pills = {}, cur = "all";
+    const FILTERS = [["all", "All", () => true], ["done", "Done", (m) => m.status === "done"],
+                     ["processing", "Processing", (m) => m.status === "processing" || m.status === "queued"],
+                     ["failed", "Failed", (m) => m.status === "failed"]];
+
+    function mount(data) {
+      const main = shell("recordings");
+      document.title = "Recordings · Who said what";
+      lib = Library({ empty: (list) => list.length
+        ? h("div.empty.slim", h("h3", `No ${FILTERS.find((f) => f[0] === cur)[1].toLowerCase()} recordings`), h("p", "Try another filter."))
+        : h("div.empty", emptyArt(), h("h3", "No recordings yet"),
+            h("p", "Record a conversation or drop in an audio file to get started."),
+            h("a.btn.primary", { href: "/", style: { marginTop: "18px" } }, icon("mic"), "New recording")) });
+      const filters = h("div.filters", { role: "tablist", "aria-label": "Filter recordings" }, FILTERS.map(([k, label]) =>
+        (pills[k] = h("button.fpill", { role: "tab", on: { click: () => pick(k) } }, label, h("span.tnum", "0")))));
+      main.append(h("section.library.page",
+        pageHead((labelEl = h("span", "Library")), "Recordings",
+          "Everything you have recorded or uploaded, newest first. Statuses update live while the GPU works.", filters),
+        lib.el));
+      pick(cur, false);
+      setRows(data.rows, true);
+      tickAgo();
     }
-
+    function pick(k, render = true) {
+      cur = k;
+      Object.entries(pills).forEach(([key, el]) => { el.classList.toggle("on", key === k); el.setAttribute("aria-selected", String(key === k)); });
+      lib.setFilter(FILTERS.find((f) => f[0] === k)[2], render);
+    }
+    function setRows(list, first = false) {
+      setCount(list.length);
+      labelEl.textContent = `Library · ${list.length}`;
+      for (const [k, , fn] of FILTERS) pills[k].lastChild.textContent = list.filter(fn).length;
+      lib.set(list, first);
+    }
     return { mount, rows: setRows };
   })();
 
@@ -542,10 +617,11 @@ window.WSW = (() => {
     function mount(data) {
       D = data;
       if (ws) { ws.destroy(); ws = null; }
-      main = shell();
+      main = shell("recordings");
+      if (D.count != null) setCount(D.count);
       if (!D.row) {
         main.append(h("div.notfound", h("h1", "Recording not found"), h("p", "It may have been deleted."),
-          h("a.btn", { href: "/" }, icon("back"), "All recordings")));
+          h("a.btn", { href: "/recordings" }, icon("back"), "All recordings")));
         return;
       }
       const r = D.row, res = D.result;
@@ -559,7 +635,7 @@ window.WSW = (() => {
         res ? h("a.btn", { href: `/api/recordings/${r.id}/result.json`, download: `${r.id}.json` }, icon("download"), h("span", "Download JSON")) : null,
         h("button.icon-btn.danger", { "aria-label": "Delete recording", title: "Delete", on: { click: del } }, icon("trash")));
       main.append(h("div.dhead",
-        h("div.dtitle", h("a.back", { href: "/" }, icon("back"), "All recordings"), titleInp, metaEl), actions));
+        h("div.dtitle", h("a.back", { href: "/recordings" }, icon("back"), "All recordings"), titleInp, metaEl), actions));
       paintMeta();
 
       main.append(player());
@@ -798,7 +874,7 @@ window.WSW = (() => {
     async function del() {
       if (await confirmDialog({ title: "Delete recording?", body: `“${D.row.name}” and its audio and transcript will be removed. This can't be undone.` })) {
         send("delete", { id: D.row.id });
-        setTimeout(() => (location.href = "/"), 1500);   // normally WSW.gone() comes first
+        setTimeout(() => (location.href = "/recordings"), 1500);   // normally WSW.gone() comes first
       }
     }
 
@@ -813,7 +889,7 @@ window.WSW = (() => {
       if (statusChanged && !D.result) renderBody();
     }
 
-    function gone() { location.href = "/"; }
+    function gone() { location.href = "/recordings"; }
 
     // keyboard + scroll wiring (once)
     function wire() {
@@ -839,18 +915,163 @@ window.WSW = (() => {
     return { mount: (d) => { wire(); mount(d); }, update, gone };
   })();
 
+  // ------------------------------------------------------------ /architecture
+  const Architecture = (() => {
+    // ---- the pipeline diagram (inline SVG, wide screens): gold = audio in / job out,
+    // teal = result + live event back, dashed = playback straight from MinIO
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    function node(x, y, w, hh, stamp, name, lines, { dot = "", cls = "" } = {}) {
+      // stamp pinned to the top; name + detail lines follow it (short boxes) or sit centred (tall ones)
+      const bh = 26 + lines.length * 19, top = hh < 130 ? y + 34 : Math.max(y + 40, y + hh / 2 - bh / 2);
+      return `<g class="n ${cls}"><rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="8"/>` +
+        `<text class="n-stamp" x="${x + 16}" y="${y + 24}">${esc(stamp)}</text>` +
+        (dot ? `<circle class="sdot ${dot}" cx="${x + w - 18}" cy="${y + 20}" r="4"/>` : "") +
+        `<text class="n-name" x="${x + 16}" y="${top + 24}">${esc(name)}</text>` +
+        lines.map((l, i) => `<text class="n-line" x="${x + 16}" y="${top + 46 + i * 19}">${esc(l)}</text>`).join("") + "</g>";
+    }
+    function arrow(x1, x2, y, label, kind) {        // horizontal; label above the middle
+      return `<g class="e ${kind}"><line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" marker-end="url(#ah-${kind})"/>` +
+        `<text class="e-label" x="${(x1 + x2) / 2}" y="${y - 9}" text-anchor="middle">${esc(label)}</text></g>`;
+    }
+    function diagram() {
+      const B = [10, 160], U = [290, 440], I = [590, 780], W = [930, 1070], G = [1200, 1370];
+      const rows = [106, 214, 322, 430];            // centre lines of MinIO, Postgres, stream, pub/sub
+      const svg = `<svg class="arch-svg" viewBox="0 0 1380 492" role="img" aria-label="Pipeline: browser, ui, MinIO, Postgres, Redis, worker, GPU ASR service">
+        <defs>
+          <marker id="ah-gold" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah gold"/></marker>
+          <marker id="ah-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah teal"/></marker>
+          <marker id="ah-play" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="ah gold"/></marker>
+        </defs>
+        <g class="e play"><path d="M${(I[0] + I[1]) / 2} 60 V30 H${(B[0] + B[1]) / 2} V163" marker-end="url(#ah-play)"/>
+          <text class="e-label" x="${(U[0] + U[1]) / 2}" y="21" text-anchor="middle">Playback · presigned GET (1 h) · streamed straight from MinIO</text></g>
+        ${node(B[0], 165, B[1] - B[0], 200, "Client", "Browser", ["mic recorder", "waveform", "player"])}
+        ${node(U[0], 60, U[1] - U[0], 416, "Web · :8080", "ui", ["NiceGUI", "websocket push", "custom JS"], { dot: "live" })}
+        ${node(I[0], 60, I[1] - I[0], 92, "Object store · :9000", "MinIO", ["audio · result.json"], { cls: "infra" })}
+        ${node(I[0], 168, I[1] - I[0], 92, "Database", "Postgres", ["one row per recording"], { cls: "infra" })}
+        ${node(I[0], 276, I[1] - I[0], 92, "Redis stream", "asr-jobs", ["consumer group"], { cls: "infra" })}
+        ${node(I[0], 384, I[1] - I[0], 92, "Redis pub/sub", "events", ["recordings.events"], { cls: "infra" })}
+        ${node(W[0], 60, W[1] - W[0], 416, "Worker", "worker", ["FastStream", "2 in flight", "retries on 503"])}
+        ${node(G[0], 165, G[1] - G[0], 200, "GPU box · :9100", "ASR service", ["Parakeet · words", "pyannote · speakers", "2× RTX 3090"], { dot: "gpu", cls: "gpu" })}
+        ${arrow(B[1], U[0], 240, "POST audio", "gold")}
+        ${arrow(U[0], B[1], 290, "live status", "teal")}
+        ${arrow(U[1], I[0], rows[0], "PUT audio", "gold")}
+        ${arrow(U[1], I[0], rows[1], "INSERT · queued", "gold")}
+        ${arrow(U[1], I[0], rows[2], "XADD job", "gold")}
+        ${arrow(I[0], U[1], rows[3], "event", "teal")}
+        ${arrow(W[0], I[1], rows[0], "result.json", "teal")}
+        ${arrow(W[0], I[1], rows[1], "stats · done", "teal")}
+        ${arrow(I[1], W[0], rows[2], "XREADGROUP", "gold")}
+        ${arrow(W[0], I[1], rows[3], "PUBLISH done", "teal")}
+        ${arrow(W[1], G[0], 240, "/v1/transcribe", "gold")}
+        ${arrow(G[0], W[1], 290, "words + who", "teal")}
+      </svg>`;
+      const box = h("div.arch-diagram");
+      box.innerHTML = svg;
+      return box;
+    }
+
+    // ---- the same flow as a vertical list (narrow screens)
+    function flow() {
+      const n = (stamp, name, sub, dot) => h("div.fl-node", h("div.fl-stamp", stamp, dot ? h("span.sdot-h", { cls: dot }) : null), h("div.fl-name", name), sub ? h("div.fl-sub", sub) : null);
+      const e = (kind, label) => h("div.fl-edge", { cls: kind }, h("span.fl-arr", "↓"), h("span", label));
+      return h("div.arch-flow",
+        n("Client", "Browser", "mic recorder · waveform · player"),
+        e("gold", "POST audio"),
+        n("Web · :8080", "ui", "NiceGUI + websocket push", "live"),
+        e("gold", "PUT audio · INSERT row (queued) · XADD job"),
+        h("div.fl-trio", n("Object store", "MinIO"), n("Database", "Postgres"), n("Redis stream", "asr-jobs")),
+        e("gold", "XREADGROUP · 2 in flight"),
+        n("Worker", "worker", "FastStream · retries on 503"),
+        e("gold", "POST /v1/transcribe"),
+        n("GPU box · :9100", "ASR service", "Parakeet words + pyannote speakers · 2× RTX 3090", "gpu"),
+        e("teal", "words + who spoke, back to the worker"),
+        h("div.fl-trio", n("MinIO", "result.json"), n("Postgres", "stats · done"), n("Redis pub/sub", "PUBLISH")),
+        e("teal", "event → ui → websocket"),
+        n("Client", "Browser", "live status · playback via presigned GET from MinIO"));
+    }
+
+    const STEPS = [
+      ["Record or upload", "The browser records with MediaRecorder or takes a dropped file and POSTs the raw audio; the ui streams it into MinIO.", ["MediaRecorder", "POST /api/recordings"]],
+      ["Queue", "The ui inserts a Postgres row with status queued and adds a job to the asr-jobs Redis stream.", ["Postgres", "XADD"]],
+      ["Worker claims", "A worker in the consumer group reads the job and flips the row to processing with a conditional UPDATE. If two race, only one wins.", ["Consumer group", "WHERE status = 'queued'"]],
+      ["Transcribe + diarize", "The worker sends the audio to the GPU box: Parakeet writes the words with timestamps, pyannote works out who spoke when. A busy service (503) is waited out and retried.", ["Parakeet", "pyannote", ":9100"]],
+      ["Save", "result.json goes to MinIO; duration, speed, speaker count and the talk-time split land in the Postgres row, status done.", ["MinIO", "Postgres", "speaker_stats"]],
+      ["Live update + playback", "A PUBLISH on Redis pub/sub reaches the ui, which pushes the new status to every open page over its websocket. The player streams the audio from MinIO via a presigned URL.", ["Redis pub/sub", "websocket", "presigned URL"]],
+    ];
+
+    const SERVICES = [
+      ["Frontend · ui", "Who said what", "The pages you are looking at. NiceGUI serves them and pushes every status change over its websocket; the recorder, the drop zone and the player are plain JavaScript.",
+        ["NiceGUI", "Custom JS", "wavesurfer.js", "MediaRecorder"]],
+      ["Worker · FastStream", "Job runner", "Takes jobs off a Redis stream, sends the audio to the GPU service and writes the result back. Two jobs in flight; a busy service (503) is retried, an interrupted job is picked up again on restart.",
+        ["FastStream", "Redis Streams", "Consumer group", "2 in flight", "Retries on 503"]],
+      ["Storage", "MinIO + Postgres", "Audio and the raw service response live in MinIO; Postgres keeps one row per recording with its status and numbers. Status events travel over Redis pub/sub.",
+        ["MinIO", "Postgres", "Presigned URLs", "Redis pub/sub"]],
+      ["GPU · ASR service", "Parakeet + pyannote", "Speech recognition with word timestamps, then speaker diarization, on the home lab box. Roughly forty times faster than real time.",
+        ["Parakeet TDT 0.6B v3", "pyannote community-1", "2× RTX 3090", "~40× real time"]],
+    ];
+
+    function gpuStatus(el) {
+      const paint = (v) => {
+        el.className = "env-status " + (v.ok ? "ok" : v.ok === false ? "bad" : "");
+        el.replaceChildren(h("span.dot"), v.ok ? "Live · ASR service healthy" : v.ok === false ? `Down · ${v.text}` : "Checking…");
+      };
+      healthHooks.push(paint);
+      if (lastHealth) paint(lastHealth);
+      return el;
+    }
+
+    function mount(data) {
+      const main = shell("architecture");
+      document.title = "Architecture · Who said what";
+      setCount(data.count || 0);
+      healthHooks.push((v) => document.querySelectorAll(".sdot.gpu, .sdot-h.gpu").forEach((d) => {
+        d.classList.toggle("ok", !!v.ok); d.classList.toggle("bad", v.ok === false);
+      }));
+
+      const legend = h("div.legend",
+        h("span", h("i.lg.gold"), "Audio in, job out"), h("span", h("i.lg.teal"), "Result + live event back"),
+        h("span", h("i.lg.lg-play"), "Playback"), h("span", h("i.lg-dot"), "Live status"));
+
+      const steps = h("ol.steps-grid", STEPS.map(([t, d, tags], i) => h("li.step-card",
+        h("div.step-n", String(i + 1).padStart(2, "0")), h("div",
+          h("h3.step-t", t), h("p.step-d", d), h("div.stack-tags", tags.map((x) => h("span.tag", x)))))));
+
+      const services = h("div.arch-grid", SERVICES.map(([stamp, name, desc, tags]) => h("div.arch-card",
+        h("div.stamp", stamp), h("h3.arch-name", name), h("p.arch-desc", desc), h("div.stack-tags", tags.map((t) => h("span.tag", t))))));
+
+      const cell = (tag, stamp, name, url, status, href) => h(tag, { cls: "env-cell", ...(href ? { href, target: "_blank", rel: "noopener" } : {}) },
+        h("div.stamp", stamp), h("div.env-name", name, href ? h("span.arr", "↗") : null), h("div.env-url", url), status);
+      const where = h("div.deploy-grid",
+        cell("div", "Environment 01", "Local UI", "localhost:8080", h("div.env-status.ok", h("span.dot"), "Live · this page")),
+        cell("div", "Environment 02", "GPU box", "ASR service on the LAN · :9100", gpuStatus(h("div.env-status"))),
+        cell("a", "Environment 03", "MinIO console", "localhost:9001", h("div.env-status.ok", h("span.dot"), "Object store · recordings bucket"), "http://localhost:9001"));
+
+      main.append(
+        h("section.page", pageHead("System", "Architecture",
+          "How a recording travels from your microphone to two GPUs and back, and how every open page hears about it the moment it is done.")),
+        h("section.arch-sec.first", h("div.panel.diagram-panel", h("div.stamp", "Pipeline"), diagram(), flow(), legend)),
+        h("section.arch-sec", secHead("01 · Flow", "How a recording moves"), steps),
+        h("section.arch-sec", secHead("02 · Services", "What runs"), services),
+        h("section.arch-sec", secHead("03 · Deployment", "Where it runs"), where,
+          h("div.note", h("div.split-label", "Playback"),
+            h("p", "The browser streams the audio straight from MinIO through a presigned URL that is valid for one hour, so audio never passes through the ui. wavesurfer.js decodes the whole file to draw the speaker-coloured waveform, which is fine at demo lengths."))));
+    }
+    return { mount };
+  })();
+
   // ------------------------------------------------------------ boot
   let view = null;
   document.addEventListener("DOMContentLoaded", () => {
     const d = window.__WSW;
     if (!d) return;
     view = d.view;
-    (view === "home" ? Home : Detail).mount(d);
+    ({ home: Home, recordings: Recordings, architecture: Architecture, detail: Detail }[view] || Detail).mount(d);
     health(d.health);
   });
 
   return {
-    rows: (list) => view === "home" && Home.rows(list),
+    rows: (list) => (view === "home" ? Home : view === "recordings" ? Recordings : null)?.rows(list),
+    count: setCount,
     detail: (p) => view === "detail" && Detail.update(p),
     gone: () => view === "detail" && Detail.gone(),
     health,
