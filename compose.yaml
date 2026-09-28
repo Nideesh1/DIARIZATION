@@ -1,0 +1,43 @@
+# docker compose up -d --build     (after ./gen_token.sh and the one-off ./prefetch.sh)
+# Same container as run.sh: both GPUs, offline models from the `asr-models` volume,
+# bearer token from asr.env. Override the pool sizes from the shell, e.g. MAX_JOBS=1 docker compose up -d
+services:
+  asr:
+    build: .
+    image: asr-service:0.2.0
+    container_name: asr
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+    env_file: asr.env
+    environment:
+      STT_REPLICAS: ${STT_REPLICAS:-2}
+      STT_DEVICES: ${STT_DEVICES:-cuda:0}
+      DIAR_REPLICAS: ${DIAR_REPLICAS:-2}
+      DIAR_DEVICES: ${DIAR_DEVICES:-cuda:0,cuda:1}
+      MAX_JOBS: ${MAX_JOBS:-2}
+    volumes:
+      - asr-models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0", "1"]
+              capabilities: [gpu]
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: "5"
+    # No curl in the image; loading both model pools takes a few minutes.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9100/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 6m
+
+volumes:
+  asr-models:
+    name: asr-models   # the same volume prefetch.sh and run.sh use

@@ -1,0 +1,6 @@
+# torch/torchaudio 2.8.0 are installed first from the cu128 index (see Dockerfile).
+nemo_toolkit[asr]==3.0.0
+pyannote.audio==4.0.7
+torchcodec>=0.7,<0.8
+fastapi==0.141.1
+uvicorn==0.54.0
