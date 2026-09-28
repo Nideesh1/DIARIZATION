@@ -266,7 +266,7 @@ def index() -> None:
 
     with ui.column().classes("page"):
         with ui.card().classes("rec-card"):
-            with ui.row().classes("items-center w-full gap-8 no-wrap"):
+            with ui.row().classes("rec-row items-center w-full gap-8 no-wrap"):
                 btn = ui.button(icon="mic", on_click=toggle).props("round unelevated color=red-6").classes("rec-btn")
                 with ui.column().classes("gap-1"):
                     ui.html('<span id="rec-time" class="rec-time">00:00</span>', sanitize=False)
@@ -290,12 +290,12 @@ def index() -> None:
             for m in sorted(RECORDS.values(), key=lambda m: m["created_at"], reverse=True):
                 rid = m["id"]
                 with ui.card().classes("row-card").on("click", lambda rid=rid: ui.navigate.to(f"/r/{rid}")):
-                    with ui.row().classes("items-center w-full no-wrap gap-4"):
-                        with ui.column().classes("gap-0 min-w-0 grow"):
+                    with ui.element("div").classes("row-grid"):
+                        with ui.column().classes("row-name gap-0 min-w-0"):
                             ui.label(m["name"]).classes("row-title")
                             ui.label(datetime.fromisoformat(m["created_at"]).strftime("%b %d, %H:%M")
                                      ).classes("muted whitespace-nowrap")
-                        with ui.column().classes("gap-1 items-start w-56 shrink-0"):
+                        with ui.column().classes("row-status gap-1 items-start min-w-0"):
                             status_chip(m)
                         metric(fmt_dur(m["duration_s"]), "audio")
                         metric(fmt_secs(m["processing_s"]), "processing")
@@ -371,11 +371,10 @@ def detail(rid: str) -> None:
 
         with ui.element("div").classes("player-bar"):
             ui.audio(f"/media/{rid}/{m['audio']}").classes("w-full")
-        with ui.row().classes("w-full no-wrap items-start gap-8"):
-            ui.html(transcript_html(res, colors, names), sanitize=False).classes("grow min-w-0")
-            with ui.column().classes("side gap-4"):
-                with ui.card().classes("side-card"):
-                    ui.label("Speakers").classes("side-h")
+        with ui.element("div").classes("top-row"):
+            with ui.card().classes("side-card"):
+                ui.label("Speakers").classes("side-h")
+                with ui.element("div").classes("spk-grid"):
                     for s in speakers:
                         with ui.row().classes("items-center no-wrap gap-3"):
                             ui.element("span").classes("swatch").style(f"background:{colors[s]}")
@@ -385,22 +384,30 @@ def detail(rid: str) -> None:
                                 save(rid)
                                 ui.run_javascript(f"demoRename({json.dumps(s)}, {json.dumps(e.value or s)})")
                             ui.input(value=names[s], on_change=rename).props("dense borderless").classes("spk-input")
-                with ui.card().classes("side-card"):
+            with ui.card().classes("side-card"):
+                with ui.row().classes("w-full items-center no-wrap"):
                     ui.label("Stats").classes("side-h")
-                    model = res.get("model") or {}
-                    rows = [("Audio", fmt_dur(m["duration_s"])), ("Processing", fmt_secs(m["processing_s"])),
-                            ("Speed", f"{m['rtf']:g}× real time" if m["rtf"] else "–"),
-                            ("Speakers", str(len(speakers))), ("Words", str(len(res.get("words") or []))),
-                            ("STT", model.get("stt") or "–"),
-                            ("Diarization", (model.get("diarization") or "–").split("/")[-1])]
-                    with ui.grid(columns=2).classes("stats"):
-                        for k, v in rows:
-                            ui.label(k).classes("muted")
-                            ui.label(v)
-                ui.button("Download JSON", icon="download", on_click=lambda: ui.download.content(
-                    json.dumps(res, indent=1), f"{rid}.json", "application/json")).props("outline")
-
+                    ui.space()
+                    ui.button("Download JSON", icon="download", on_click=lambda: ui.download.content(
+                        json.dumps(res, indent=1), f"{rid}.json", "application/json")).props("outline dense no-caps").classes("px-3")
+                model = res.get("model") or {}
+                rows = [("Audio", fmt_dur(m["duration_s"])), ("Processing", fmt_secs(m["processing_s"])),
+                        ("Speed", f"{m['rtf']:g}× real time" if m["rtf"] else "–"),
+                        ("Speakers", str(len(speakers))), ("Words", str(len(res.get("words") or []))),
+                        ("STT", model.get("stt") or "–"),
+                        ("Diarization", (model.get("diarization") or "–").split("/")[-1])]
+                with ui.element("div").classes("stats"):
+                    for k, v in rows:
+                        with ui.element("div").classes("stat wide" if k in ("STT", "Diarization") else "stat"):
+                            ui.label(k).classes("stat-l")
+                            ui.label(v).classes("stat-v")
+        segs = res.get("segments") or []
+        n_turns = sum(1 for i, g in enumerate(segs) if i == 0 or g.get("speaker") != segs[i - 1].get("speaker"))
+        n_words = len(res.get("words") or [])
+        with ui.expansion(f"Transcript · {n_turns} turn{'s' * (n_turns != 1)} · {n_words} word{'s' * (n_words != 1)}",
+                          value=True).classes("transcript-exp w-full"):
+            ui.html(transcript_html(res, colors, names), sanitize=False).classes("w-full")
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(host="127.0.0.1", port=8080, title="ASR demo", dark=True, reload=False,
+    ui.run(host=os.environ.get("DEMO_HOST", "127.0.0.1"), port=int(os.environ.get("DEMO_PORT", "8080")), title="ASR demo", dark=True, reload=False,
            show=False, favicon="🎙️")

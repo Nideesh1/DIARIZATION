@@ -1,0 +1,17 @@
+# Demo UI:  cd demo && docker compose up -d --build   ->  http://localhost:8080
+services:
+  demo:
+    build: .
+    image: asr-demo
+    ports:
+      - "127.0.0.1:8080:8080"   # localhost only: mic access needs localhost, and not exposed to the LAN
+    env_file: .env              # ASR_URL, ASR_TOKEN (read on the host at `up`; never copied into the image)
+    environment:
+      DEMO_HOST: 0.0.0.0
+      DEMO_DATA_DIR: /data
+    volumes:
+      - demo-data:/data         # recordings survive rebuilds; `docker compose down -v` deletes them
+    restart: unless-stopped
+
+volumes:
+  demo-data:

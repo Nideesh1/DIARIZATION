@@ -71,9 +71,11 @@ window.demoRec = (() => {
     while (lo <= hi) { const m = (lo + hi) >> 1; if (words[m].s <= t) { i = m; lo = m + 1; } else hi = m - 1; }
     return i >= 0 && t <= words[i].e + 0.3 ? i : -1;  // keep it lit across short gaps
   }
-  function follow(el) {
-    const r = el.getBoundingClientRect(), top = 170;
-    if (r.top < top || r.bottom > innerHeight - 80) window.scrollBy({ top: r.top - (innerHeight + top) / 2 + 40, behavior: "smooth" });
+  function follow(el) {             // scroll the page only when the word leaves the visible area
+    if (!el.offsetParent) return;   // transcript collapsed
+    const bar = document.querySelector(".player-bar");
+    const top = (bar ? bar.getBoundingClientRect().bottom : 0) + 16, r = el.getBoundingClientRect();
+    if (r.top < top || r.bottom > innerHeight - 60) window.scrollBy({ top: r.top - (top + (innerHeight - top) / 3), behavior: "smooth" });
   }
   function tick() {
     raf = 0;
