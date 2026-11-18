@@ -31,6 +31,13 @@ for live captions.
      An unknown value returns the full list in the error.
    - `max_speakers` is 1..4 (default 4). Set it to the expected speaker count for best labels.
      With 1 the diarizer does not gate the ASR: everything audible is transcribed as speaker 0.
+   - `split_first_speaker` is optional (default `false`; needs `max_speakers: 2`). Speaker 0 is
+     the first voice in the stream; speaker 1 is everyone else. Speaker 1's ASR hears every
+     frame where speaker 1 talks **or speaker 0 does not** (overlaps and the gaps between
+     speaker 0's sentences), not only the frames the diarizer gives it. Made for a voice
+     assistant's barge-in stream: its echo is speaker 0, and a user's short "stop" between
+     its sentences (too faint or short for the diarizer to call a new speaker) still lands
+     in speaker 1. The `ready` message echoes `"split_first_speaker": true`.
 3. **The server replies** `{"type":"ready","session_id":"…","latency_s":0.56,"sample_rate":16000,"encoding":"pcm_s16le","language":"auto","max_speakers":4}`.
 4. **Stream audio** as **binary** messages: raw PCM, signed 16-bit little-endian, mono, 16 kHz.
    - Any size works (20–100 ms is typical), up to 1 MiB each.
@@ -150,4 +157,8 @@ not gated, so no HF token is needed.
   can differ from the batch service's labels for the same audio.
 - The ASR sometimes emits a language tag such as `<en-US>`. The service strips it.
 - Heavy crosstalk can put the same words under two speakers. Masked ASR only partly separates overlapping speech.
+- `split_first_speaker`: masking is not source separation. Where both voices overlap, speaker
+  1's text still has words of the louder voice (her echo), and a voice ~6 dB or more below
+  the other is often lost. In tests a speaker-1 stream occasionally emitted nothing for a
+  whole session (seen with synthetic audio that has exact digital silence).
 - `language` is fixed per session. `auto` works for most audio, and a fixed locale can be more accurate.

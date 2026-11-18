@@ -74,7 +74,7 @@ _active_sessions = 0
 LANG_TAG = re.compile(r"\s*<[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,4})?>\s*")
 
 
-def _base_cfg(max_spks: int):
+def _base_cfg(max_spks: int, single: bool | None = None):
     from omegaconf import OmegaConf
     # Values from nvidia/Nemotron-3-Diarization ASR_INTEGRATION_GUIDE.md (option 2: masked ASR).
     # max_speakers 1: no diarizer gating (single_speaker_mode). Otherwise the diarizer can give
@@ -83,7 +83,8 @@ def _base_cfg(max_spks: int):
     return OmegaConf.create({
         "device": DEVICE, "sample_rate": SR, "deploy_mode": True, "streaming_mode": True,
         "max_num_of_spks": max_spks, "batch_size": 32, "parallel_speaker_strategy": True,
-        "masked_asr": True, "mask_preencode": False, "single_speaker_mode": max_spks == 1,
+        "masked_asr": True, "mask_preencode": False,
+        "single_speaker_mode": max_spks == 1 if single is None else single,
         "cache_gating": True, "cache_gating_buffer_size": 2, "binary_diar_preds": True,
         "spkcache_len": None, "spkcache_update_period": 222, "fifo_len": 264,
         "diar_right_context": 0, "att_context_size": ATT_CONTEXT, "use_amp": True,
@@ -155,12 +156,37 @@ def _warmup() -> None:
     if sr != SR:
         logj("warmup skipped: wav is not 16 kHz", sr=sr)
         return
-    for _ in range(2):   # second pass confirms steady-state step times
-        s = Session(language=DEFAULT_LANGUAGE, max_speakers=MAX_SPEAKERS)
+    # Every session shape in use: the default, single speaker (max_speakers 1) and split
+    # (max_speakers 2 + split_first_speaker). The first pass of each compiles its kernels;
+    # the default's second pass confirms steady-state step times.
+    modes = [(MAX_SPEAKERS, False), (MAX_SPEAKERS, False)]
+    if MAX_SPEAKERS > 1:
+        modes += [(1, False), (2, True)]
+    for spk, split in modes:
+        s = Session(language=DEFAULT_LANGUAGE, max_speakers=spk, split_first=split)
         s.append(audio)
         s.step_all()
         s.finish()
     logj("warmup done", seconds=round(time.time() - t0, 1), audio_s=round(len(audio) / SR, 1))
+
+
+def _split_first_speaker(streamer: Any) -> None:
+    """`split_first_speaker` sessions (max_speakers 2): speaker 1's ASR stream hears every
+    frame where speaker 1 talks OR speaker 0 does not (overlap and gaps included), not only
+    the frames the diarizer gives speaker 1. Speaker 0 is the first voice in the stream (a
+    voice assistant's echo during its reply); speaker 1 is everyone else, including speech
+    too faint or short for the diarizer to call a new speaker (a user's "stop" between her
+    sentences). Only the masks change: the diarizer's own state (speaker cache) does not."""
+    import torch
+    step = streamer._forward_diarization_streaming_step
+    tail = max(1, int(streamer._nframes_per_chunk)) * 4
+
+    def patched(*args: Any, **kw: Any):
+        state, preds = step(*args, **kw)
+        p = preds[:, -tail:]           # idempotent: older frames were done on earlier steps
+        p[:, :, 1] = torch.maximum(p[:, :, 1], 1.0 - p[:, :, 0])
+        return state, preds
+    streamer._forward_diarization_streaming_step = patched
 
 
 # ---------------------------------------------------------------- session
@@ -168,13 +194,15 @@ class Session:
     """One live stream. append() may be called from the event loop; step_all() and
     finish() only on the GPU thread."""
 
-    def __init__(self, language: str, max_speakers: int):
+    def __init__(self, language: str, max_speakers: int, split_first: bool = False):
         from nemo.collections.asr.parts.utils.multispk_transcribe_utils import SpeakerTaggedASR
         from nemo.collections.asr.parts.utils.streaming_utils import CacheAwareStreamingAudioBuffer
-        cfg = _base_cfg(max_speakers)
+        cfg = _base_cfg(max_speakers, single=False if split_first else None)
         cfg.spkcache_len = M["spkcache_len"]
         self.language = language
         self.streamer = SpeakerTaggedASR(cfg, M["asr"], M["diar"])
+        if split_first:
+            _split_first_speaker(self.streamer)
         self.abuf = CacheAwareStreamingAudioBuffer(model=M["asr"], online_normalization=False)
         self._lock = threading.Lock()
         self._pending = np.zeros(M["cache"], dtype=np.float32)
@@ -348,6 +376,10 @@ async def stream(ws: WebSocket) -> None:
     if not 1 <= max_spk <= MAX_SPEAKERS:
         await _fail(ws, "bad_request", f"max_speakers must be 1..{MAX_SPEAKERS}", 1003)
         return
+    split_first = start.get("split_first_speaker", False) is True
+    if split_first and max_spk != 2:
+        await _fail(ws, "bad_request", "split_first_speaker needs max_speakers 2", 1003)
+        return
 
     # 2) admission
     with _sessions_lock:
@@ -367,11 +399,15 @@ async def stream(ws: WebSocket) -> None:
     sent: list[dict] = []
     end_reason = "client_stop"
     try:
-        session = await loop.run_in_executor(GPU, Session, language, max_spk)
-        await _send(ws, {"type": "ready", "session_id": sid, "sample_rate": SR,
-                         "encoding": "pcm_s16le", "latency_s": round(M["hop"] / SR, 2),
-                         "language": language, "max_speakers": max_spk})
-        logj("session start", session=sid, language=language, max_speakers=max_spk)
+        session = await loop.run_in_executor(GPU, Session, language, max_spk, split_first)
+        ready = {"type": "ready", "session_id": sid, "sample_rate": SR,
+                 "encoding": "pcm_s16le", "latency_s": round(M["hop"] / SR, 2),
+                 "language": language, "max_speakers": max_spk}
+        if split_first:
+            ready["split_first_speaker"] = True
+        await _send(ws, ready)
+        logj("session start", session=sid, language=language, max_speakers=max_spk,
+             split_first_speaker=split_first)
 
         pump: asyncio.Task | None = None
 
