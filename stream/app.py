@@ -77,10 +77,13 @@ LANG_TAG = re.compile(r"\s*<[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{2,4})?>\s*")
 def _base_cfg(max_spks: int):
     from omegaconf import OmegaConf
     # Values from nvidia/Nemotron-3-Diarization ASR_INTEGRATION_GUIDE.md (option 2: masked ASR).
+    # max_speakers 1: no diarizer gating (single_speaker_mode). Otherwise the diarizer can give
+    # speaker 0 to background speech (e.g. a loudspeaker's echo residue too faint to transcribe)
+    # and the real talker becomes speaker 1, which max_speakers=1 masks out: no words at all.
     return OmegaConf.create({
         "device": DEVICE, "sample_rate": SR, "deploy_mode": True, "streaming_mode": True,
         "max_num_of_spks": max_spks, "batch_size": 32, "parallel_speaker_strategy": True,
-        "masked_asr": True, "mask_preencode": False, "single_speaker_mode": False,
+        "masked_asr": True, "mask_preencode": False, "single_speaker_mode": max_spks == 1,
         "cache_gating": True, "cache_gating_buffer_size": 2, "binary_diar_preds": True,
         "spkcache_len": None, "spkcache_update_period": 222, "fifo_len": 264,
         "diar_right_context": 0, "att_context_size": ATT_CONTEXT, "use_amp": True,

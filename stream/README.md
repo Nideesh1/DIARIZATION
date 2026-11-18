@@ -30,6 +30,7 @@ for live captions.
    - `language` is optional (default `auto`). It is a locale such as `en-US` or `de-DE`, or `auto`.
      An unknown value returns the full list in the error.
    - `max_speakers` is 1..4 (default 4). Set it to the expected speaker count for best labels.
+     With 1 the diarizer does not gate the ASR: everything audible is transcribed as speaker 0.
 3. **The server replies** `{"type":"ready","session_id":"…","latency_s":0.56,"sample_rate":16000,"encoding":"pcm_s16le","language":"auto","max_speakers":4}`.
 4. **Stream audio** as **binary** messages: raw PCM, signed 16-bit little-endian, mono, 16 kHz.
    - Any size works (20–100 ms is typical), up to 1 MiB each.
